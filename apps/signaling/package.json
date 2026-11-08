@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
+    "@types/node": "^26.6.6",
     "vitest": "^3.2.4"
   }
 }
