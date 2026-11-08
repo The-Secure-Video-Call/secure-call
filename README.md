@@ -21,3 +21,14 @@ pnpm lint && pnpm typecheck && pnpm test && pnpm build
 - `apps/web` – React + Vite client
 - `apps/signaling` – Node.js signaling server
 - `packages/protocol` – shared zod schemas
+
+## License
+
+Copyright (C) 2026 Usman Khan and contributors.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU Affero General Public License, version 3 only, as published by the Free Software Foundation.
+See [LICENSE](LICENSE) for the full text.
+
+If you run a modified version of this software as a network service, the AGPL requires you to offer
+the source code of your modified version to its users.

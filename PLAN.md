@@ -273,7 +273,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 | Decision | Options | Suggested default |
 |---|---|---|
 | Project name | — | `secure-call` placeholder |
-| License | MIT (permissive) / AGPL-3.0 (forks must share source) | AGPL-3.0 if you want hosted forks to stay open; MIT otherwise |
+| License | MIT (permissive) / AGPL-3.0 (forks must share source) | **Decided: AGPL-3.0-only** (see `LICENSE`) |
 | Hosting provider | Hetzner, DigitalOcean, AWS Lightsail, etc. | Any VPS with good bandwidth pricing |
 | Safety code format | Emoji / digits / words | Emoji, with digits as an accessible alternative |
 | Room expiry times | — | 10 min idle, 4 h max |
