@@ -34,13 +34,12 @@ jobs:
         with:
           fetch-depth: 1
 
-      # Once the monorepo exists (milestone M0), uncomment these so Claude can
-      # install dependencies and run the tests before pushing:
-      # - uses: pnpm/action-setup@v4
-      # - uses: actions/setup-node@v4
-      #   with:
-      #     node-version: 22
-      #     cache: pnpm
+      # Node + pnpm so Claude can install dependencies and run the project's checks.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
 
       - uses: anthropics/claude-code-action@v1
         with:
@@ -49,6 +48,6 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # To pay with purchased Console API credits instead, replace the line above with:
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: "--max-turns 30"
-          # After M0, let Claude run the project's checks:
-          # claude_args: '--max-turns 30 --allowedTools "Bash(pnpm install),Bash(pnpm lint),Bash(pnpm typecheck),Bash(pnpm test:*)"'
+          # Claude may run exactly these pnpm commands (plain `pnpm install` only, so it
+          # can't add packages from the command line), with up to 60 turns per job.
+          claude_args: '--max-turns 60 --allowedTools "Bash(pnpm install),Bash(pnpm lint),Bash(pnpm format),Bash(pnpm typecheck),Bash(pnpm test:*),Bash(pnpm build)"'
