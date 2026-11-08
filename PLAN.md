@@ -100,24 +100,24 @@ A web app is only as trustworthy as the JavaScript the server sends. If someone 
 
 | Part | Choice | Why |
 |---|---|---|
-| Language | **TypeScript** everywhere | Shared protocol types between client and server; fewer bugs |
+| Languages | **TypeScript** (web client) + **Python 3.14** (signaling server) | Each side uses the ecosystem that fits it best; a shared JSON Schema contract keeps them in sync |
 | Web client | **React + Vite** | Fast dev loop, small production bundle, huge ecosystem |
 | Styling | Tailwind CSS or plain CSS modules | No runtime CSS-in-JS needed |
 | Crypto | **Web Crypto API** (built into browsers) | No third-party crypto library to audit; HKDF, AES-GCM, SHA-256 are all built in |
-| Signaling server | **Node.js 22 + `ws`** | Tiny, well understood, easy to audit (~300 lines) |
-| Validation | **zod** | One schema used on both sides |
+| Signaling server | **Python 3.14 + Django 6.1 + Channels (Daphne)**, in the separate repo [secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend) | Mature framework with built-in security settings; WebSockets through Channels; no database needed |
+| Validation | **Pydantic 2** on the server (source of truth) + **zod** in the browser | Both are tested against the same JSON Schema and example messages |
 | TURN/STUN | **coturn** (self-hosted) | Industry standard, supports time-limited credentials |
 | Reverse proxy / TLS | **Caddy** | Automatic HTTPS certificates, simple config |
 | Deployment | **Docker Compose** on one VPS (to start) | One `docker compose up` brings up everything |
-| Monorepo | **pnpm workspaces** | Client, server and shared protocol in one repo |
-| Tests | **Vitest** (unit) + **Playwright** (two-browser end-to-end calls with fake camera) | Real call tests in CI without real hardware |
+| Repos | **secure-call** (pnpm workspaces: web client + zod protocol package) and **secure-call-backend** (uv) | Node is only the web client's build tool; nothing in production runs on Node |
+| Tests | **Vitest** (unit) + **Playwright** (two-browser end-to-end calls with fake camera); **pytest** for the server | Real call tests in CI without real hardware |
 | CI | **GitHub Actions** | Lint, type-check, test, build, security scans on every PR |
 
 ---
 
 ## 5. Repository layout
 
-One monorepo in your GitHub organisation:
+Two repos in the GitHub organisation. The web client:
 
 ```
 secure-call/
@@ -129,14 +129,8 @@ secure-call/
 │   │       ├── signaling/      # WebSocket client, encrypt/decrypt wrapper
 │   │       ├── ui/             # Lobby, call screen, safety-code dialog, controls
 │   │       └── main.tsx
-│   └── signaling/              # Node WebSocket server
-│       └── src/
-│           ├── rooms.ts        # In-memory rooms, 2-person limit, expiry
-│           ├── rateLimit.ts
-│           ├── turnCredentials.ts
-│           └── server.ts
 ├── packages/
-│   └── protocol/               # Shared zod schemas + TypeScript types for signaling messages
+│   └── protocol/               # zod schemas + TypeScript types, tested against the backend's protocol fixtures
 ├── infra/
 │   ├── docker-compose.yml
 │   ├── Caddyfile
@@ -156,11 +150,38 @@ secure-call/
 └── README.md
 ```
 
+The signaling server, [secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend):
+
+```
+secure-call-backend/
+├── config/                     # Django settings (all from env), ASGI routing, URLs
+├── signaling/
+│   ├── consumers.py            # WebSocket consumer: rooms, 2-person limit, expiry, relaying
+│   ├── protocol.py             # Pydantic message models (source of truth for the protocol)
+│   ├── rate_limit.py
+│   └── turn_credentials.py
+├── protocol/
+│   ├── schema/                 # JSON Schema exported from the Pydantic models
+│   └── fixtures/               # valid/ and invalid/ example messages, used by both repos
+├── tests/                      # pytest
+├── .github/workflows/          # CI: ruff, mypy, pytest, Django deploy checks, pip-audit
+├── SECURITY.md
+├── LICENSE
+└── README.md
+```
+
 ---
 
 ## 6. Signaling protocol (v1)
 
 The server only understands the outer envelope. Everything in `payload` is an encrypted blob it can't read.
+Every message also carries `v: 1`, the protocol version.
+
+**Contract between the two repos:** the server's Pydantic models (`signaling/protocol.py` in
+[secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend)) are the source of truth. They're exported as JSON Schema to
+`protocol/schema/`, with valid and invalid example messages in `protocol/fixtures/`. The browser's
+zod schemas in `packages/protocol` are tested against the same fixtures (set up in M1), so both
+sides agree on what a valid message is.
 
 **Client → server**
 | Type | Fields | Meaning |
@@ -189,7 +210,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 
 ### M0 — Repository and tooling
 - [ ] Create `secure-call` repo in the org; add `README.md`, `LICENSE`, `SECURITY.md`, `CODEOWNERS`
-- [ ] pnpm workspace with `apps/web`, `apps/signaling`, `packages/protocol`
+- [ ] pnpm workspace with `apps/web` and `packages/protocol`; Python backend repo `secure-call-backend` (uv, Django + Channels)
 - [ ] ESLint, Prettier, TypeScript strict mode
 - [ ] GitHub Actions: install → lint → type-check → test → build
 - [ ] Turn on Dependabot, CodeQL, secret scanning, and branch protection on `main` (PR + passing CI required)
@@ -197,7 +218,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 **Demo:** green CI on an empty app.
 
 ### M1 — Basic working call (not yet hardened)
-- [ ] Signaling server: rooms, 2-person limit, forward messages, peer-joined/left events
+- [ ] Signaling server (`secure-call-backend`): rooms, 2-person limit, forward messages, peer-joined/left events
 - [ ] Lobby page: "New call" button generates a link; camera/mic preview; device picker
 - [ ] Call page: local and remote video, mute, camera on/off, hang up
 - [ ] WebRTC with the "perfect negotiation" pattern (handles both sides offering at once)
@@ -226,7 +247,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 
 ### M4 — Hardening
 - [ ] Strict CSP, SRI, all security headers from §3.5
-- [ ] Origin check, zod validation, size limits, rate limiting on the signaling server
+- [ ] Origin check, Pydantic validation, size limits, rate limiting on the signaling server
 - [ ] Playwright end-to-end test: two browsers with fake cameras complete a call in CI
 - [ ] `pnpm audit` / `npm audit` in CI; pin dependency versions
 - [ ] Reproducible build, with release hashes published on GitHub Releases
@@ -249,11 +270,11 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 
 | Level | Tool | What it covers |
 |---|---|---|
-| Unit | Vitest | Crypto (HKDF vectors, AES-GCM round trip, tamper/replay rejection), safety-code generation, room logic, rate limiter |
-| Integration | Vitest + real `ws` server | Join/leave/full-room/expiry flows, malformed message handling |
+| Unit | Vitest (browser), pytest (server) | Crypto (HKDF vectors, AES-GCM round trip, tamper/replay rejection), safety-code generation; on the server: room logic, rate limiter, protocol models |
+| Integration | pytest + Channels `WebsocketCommunicator` | Join/leave/full-room/expiry flows, malformed message handling |
 | End-to-end | Playwright (Chromium with `--use-fake-device-for-media-stream`, plus Firefox) | Two browser contexts open the same link, connect, see matching safety codes, hang up |
 | Manual | Real devices | Safari iOS, Android Chrome, different networks, relay-only mode |
-| Security | CodeQL, Dependabot, `npm audit`, manual review | Known vulnerabilities, risky code patterns |
+| Security | CodeQL, Dependabot, `pnpm audit`, `pip-audit`, Django `check --deploy`, manual review | Known vulnerabilities, risky code patterns |
 
 ---
 
