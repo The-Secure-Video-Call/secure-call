@@ -14,6 +14,6 @@ export default tseslint.config(
     },
   },
   { files: ['apps/web/**/*.{ts,tsx}'], languageOptions: { globals: globals.browser } },
-  { files: ['apps/signaling/**/*.ts', '*.js'], languageOptions: { globals: globals.node } },
+  { files: ['*.js'], languageOptions: { globals: globals.node } },
   prettier,
 );

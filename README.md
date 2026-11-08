@@ -19,8 +19,10 @@ pnpm lint && pnpm typecheck && pnpm test && pnpm build
 ## Layout
 
 - `apps/web` – React + Vite client
-- `apps/signaling` – Node.js signaling server
-- `packages/protocol` – shared zod schemas
+- `packages/protocol` – zod schemas for signaling messages
+
+The signaling server is a separate Python (Django + Channels) project:
+[secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend).
 
 ## License
 

@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Reviews changes to crypto, signaling, WebRTC setup, room handling and server code against the security design in PLAN.md. Use proactively after any change under apps/web/src/crypto, apps/web/src/signaling, apps/web/src/rtc, apps/signaling, packages/protocol or infra.
+description: Reviews changes to crypto, signaling, WebRTC setup, room handling and server code against the security design in PLAN.md. Use proactively after any change under apps/web/src/crypto, apps/web/src/signaling, apps/web/src/rtc, packages/protocol or infra. The signaling server lives in the separate repo secure-call-backend, which has its own security-reviewer.
 tools: Read, Grep, Glob, Bash
 model: inherit
 ---
@@ -18,8 +18,10 @@ Check specifically:
    the call instead of being ignored.
 3. **Safety code**: computed from both DTLS fingerprints, sorted, hashed with SHA-256, and
    shown to the user before they're told the call is secure. A "No" ends the call.
-4. **Signaling server**: never inspects or logs `payload`; checks Origin; validates with zod;
-   enforces message size limits, rate limits, the 2-person room limit and room expiry.
+4. **Signaling client and protocol**: the browser never sends the room secret or keys to the
+   server; incoming server messages are validated with zod before use; the zod schemas match
+   the `protocol/` fixtures in secure-call-backend. (Server-side checks such as size limits,
+   rate limits and the 2-person room limit are reviewed in that repo.)
 5. **Web hardening**: no inline scripts, no third-party origins, CSP and security headers
    intact, no new dependencies without a clear reason.
 6. **TURN**: only short-lived HMAC credentials; no static passwords in code or config.
