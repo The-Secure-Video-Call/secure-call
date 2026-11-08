@@ -4,6 +4,7 @@ Secure 1-to-1 video calling web app. The full plan (architecture, security desig
 signaling protocol, milestones) is in **PLAN.md**. Read it before starting any task.
 
 ## Security ground rules (never break these)
+
 - The room secret lives only in the URL fragment (`#...`). Never log it, store it, put it
   in a query string, or send it anywhere. Only the derived `roomId` may leave the browser.
 - Use the browser's **Web Crypto API** only. No third-party crypto libraries.
@@ -16,6 +17,7 @@ signaling protocol, milestones) is in **PLAN.md**. Read it before starting any t
 - Never commit secrets. TURN secrets and API keys come from environment variables.
 
 ## Code conventions
+
 - TypeScript in strict mode everywhere. No `any` without a comment explaining why.
 - pnpm workspaces: `apps/web`, `apps/signaling`, `packages/protocol`.
 - Crypto code stays as small, pure, well-named functions in `apps/web/src/crypto/`.
@@ -23,6 +25,7 @@ signaling protocol, milestones) is in **PLAN.md**. Read it before starting any t
   negative test (tampered, replayed or oversized input is rejected).
 
 ## Working on issues
+
 - One milestone checklist item from PLAN.md per pull request.
 - Reference the issue in the PR description (`Closes #<number>`).
 - Explain any security-relevant decision in the PR description.

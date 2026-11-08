@@ -49,6 +49,6 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # To pay with purchased Console API credits instead, replace the line above with:
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: "--max-turns 30"
+          claude_args: '--max-turns 30'
           # After M0, let Claude run the project's checks:
           # claude_args: '--max-turns 30 --allowedTools "Bash(pnpm install),Bash(pnpm lint),Bash(pnpm typecheck),Bash(pnpm test:*)"'
