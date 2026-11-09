@@ -62,6 +62,18 @@ describe('startConnectionQualityPolling', () => {
     expect(onConnectionQuality).not.toHaveBeenCalled();
   });
 
+  it('does not start a new read while the previous one is still running', async () => {
+    vi.useFakeTimers();
+    const readConnectionStats = vi.fn(() => new Promise<RTCStatsReport | null>(() => {}));
+    const stopPolling = startConnectionQualityPolling({
+      readConnectionStats,
+      onConnectionQuality: vi.fn(),
+    });
+    await vi.advanceTimersByTimeAsync(CONNECTION_QUALITY_POLL_INTERVAL_MILLISECONDS * 4);
+    expect(readConnectionStats).toHaveBeenCalledTimes(1);
+    stopPolling();
+  });
+
   it('survives a failed read and reports nothing misleading', async () => {
     vi.useFakeTimers();
     const onConnectionQuality = vi.fn();

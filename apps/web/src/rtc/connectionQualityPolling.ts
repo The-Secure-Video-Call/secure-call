@@ -17,9 +17,14 @@ export function startConnectionQualityPolling(options: {
 }): () => void {
   let isStopped = false;
   let previousSnapshot: ConnectionStatsSnapshot | null = null;
+  let isReadInFlight = false;
   const pollIntervalId = setInterval(() => {
+    // A slow read must not pile up or finish out of order: skip this tick instead.
+    if (isReadInFlight) return;
+    isReadInFlight = true;
     void options.readConnectionStats().then(
       (statsReport) => {
+        isReadInFlight = false;
         if (isStopped) return;
         const currentSnapshot = summarizeStatsReport(statsReport);
         if (previousSnapshot !== null) {
@@ -31,6 +36,8 @@ export function startConnectionQualityPolling(options: {
       },
       // A failed read counts as "no data", never as a good connection.
       () => {
+        isReadInFlight = false;
+        if (isStopped) return;
         previousSnapshot = null;
       },
     );
