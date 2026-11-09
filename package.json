@@ -13,7 +13,8 @@
     "format": "prettier --write .",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "build": "pnpm -r build"
+    "build": "pnpm -r build",
+    "protocol:sync": "sh packages/protocol/scripts/sync-contract.sh"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
