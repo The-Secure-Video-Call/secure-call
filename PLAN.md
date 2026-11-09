@@ -238,7 +238,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 - [x] Safety code from both DTLS fingerprints; match/no-match dialog
 - [ ] Room expiry timers; nothing written to disk
 - [x] Unit tests for every crypto function, including a "tampered message is rejected" test
-- [ ] Write `docs/threat-model.md` and `docs/protocol.md`
+- [x] Write `docs/threat-model.md` and `docs/protocol.md`
 
 **Demo:** a server log shows only unreadable ciphertext; changing one byte makes the call refuse to connect.
 
