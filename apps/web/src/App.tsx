@@ -1,25 +1,13 @@
-import { decodeSecret } from './crypto/secret';
-import { Lobby } from './ui/Lobby';
-import { fragmentOf } from './ui/media';
+import { readFragmentFromLocationHash } from '@/crypto/callLink';
+import { decodeSecret } from '@/crypto/secret';
+import { InvalidCallLinkPage } from '@/pages/InvalidCallLinkPage';
+import { JoiningCallPage } from '@/pages/JoiningCallPage';
+import { LobbyPage } from '@/pages/LobbyPage';
 
-export const APP_TITLE = 'Secure Call';
-
+/** Picks the page for the current link: no fragment → lobby, a valid secret → the call. */
 export function App() {
-  const fragment = fragmentOf(window.location.hash);
-  if (fragment === '') return <Lobby />;
-  if (decodeSecret(fragment) === null) {
-    return (
-      <main>
-        <h1>{APP_TITLE}</h1>
-        <p role="alert">This call link is invalid. Ask for a new one.</p>
-      </main>
-    );
-  }
-  // The call flow is built in the call page issue; for now just show that we detected a link.
-  return (
-    <main>
-      <h1>{APP_TITLE}</h1>
-      <p>Joining…</p>
-    </main>
-  );
+  const fragmentText = readFragmentFromLocationHash(window.location.hash);
+  if (fragmentText === '') return <LobbyPage />;
+  if (decodeSecret(fragmentText) === null) return <InvalidCallLinkPage />;
+  return <JoiningCallPage />;
 }

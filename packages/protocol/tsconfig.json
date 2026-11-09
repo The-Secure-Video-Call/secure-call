@@ -1,5 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "noEmit": true, "types": [] },
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@protocol/*": ["./src/*"]
+    }
+  },
   "include": ["src"]
 }

@@ -1,7 +1,7 @@
 /** Turn a getUserMedia failure into a message a person can act on. */
-export function describeMediaError(err: unknown): string {
-  const name = err instanceof DOMException ? err.name : '';
-  switch (name) {
+export function describeMediaError(mediaError: unknown): string {
+  const errorName = mediaError instanceof DOMException ? mediaError.name : '';
+  switch (errorName) {
     case 'NotAllowedError':
     case 'SecurityError':
       return 'Camera or microphone access was denied. Allow access in your browser settings and try again.';
@@ -14,14 +14,4 @@ export function describeMediaError(err: unknown): string {
     default:
       return 'Could not start your camera and microphone.';
   }
-}
-
-/** Build the shareable link. The secret goes only in the fragment, which browsers never send. */
-export function buildCallLink(origin: string, encodedSecret: string): string {
-  return `${origin}/#${encodedSecret}`;
-}
-
-/** Extract the fragment value (without "#") from a location hash. */
-export function fragmentOf(hash: string): string {
-  return hash.startsWith('#') ? hash.slice(1) : hash;
 }

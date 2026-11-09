@@ -17,12 +17,36 @@ signaling protocol, milestones) is in **PLAN.md**. Read it before starting any t
   If a change seems to need that, stop and explain why in the PR instead.
 - Never commit secrets. TURN secrets and API keys come from environment variables.
 
+## Structure (keep it simple)
+
+pnpm workspaces: `apps/web` and `packages/protocol`. The signaling server is a separate Python
+repo, [secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend); its
+`protocol/` folder (JSON Schema + example messages) is the contract the zod schemas must match.
+
+Inside `apps/web/src/`:
+
+- `pages/`: one file per screen, named `<Something>Page.tsx` (`LobbyPage`, `CallPage`).
+  `App.tsx` only decides which page to show.
+- `components/`: pieces of UI used by more than one page. Create it when the first one is needed.
+- Logic, no UI, one folder per job: `crypto/` (secrets, room ID, call link), `media/` (camera and
+  microphone), `signaling/` (WebSocket client), `rtc/` (WebRTC connection).
+- Tests sit next to the file they test: `roomId.ts` → `roomId.test.ts`.
+- No catch-all folders (`utils/`, `helpers/`, `lib/`, `common/`) and no deeper nesting unless the
+  PR explains why.
+
+`packages/protocol` is used straight from its TypeScript source (no build step).
+
 ## Code conventions
 
 - TypeScript in strict mode everywhere. No `any` without a comment explaining why.
-- pnpm workspaces: `apps/web`, `packages/protocol`. The signaling server is a separate Python
-  repo, [secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend); its `protocol/` folder (JSON Schema + example
-  messages) is the contract the zod schemas must match.
+- **No relative imports.** Import with `@/…` inside `apps/web` (`@/crypto/secret`,
+  `@/pages/LobbyPage`) and `@protocol/…` for `packages/protocol`, never `./` or `../`.
+  ESLint enforces this (`no-restricted-imports`).
+- **Names say exactly what the value holds**, even if long: `selectedCameraDeviceId`,
+  `isCallLinkCopied`, `roomIdBytes`, not `id`, `d`, `tmp`, `data` or `res`. Functions are named for
+  what they do (`createNewCallLink`, `deriveRoomId`). Event handlers' parameters too:
+  `changeEvent`, not `e`. ESLint rejects names shorter than 3 characters, except `i`/`j` loop
+  counters and `id`/`ok`/`it`/`_`; it can't judge meaning, so that part is on you.
 - Crypto code stays as small, pure, well-named functions in `apps/web/src/crypto/`.
 - Every change to crypto, signaling or room logic needs unit tests, including at least one
   negative test (tampered, replayed or oversized input is rejected).
