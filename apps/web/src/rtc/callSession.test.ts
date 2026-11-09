@@ -368,6 +368,16 @@ describe('call session', () => {
     expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('room-full');
   });
 
+  it('ends the call when the room has expired, closing the connection and the socket', async () => {
+    const { server, peerConnections, signalingClient, sessionEvents } =
+      await startConnectedSession();
+    server().onServerError('room-expired');
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('room-expired');
+    expect(peerConnections[0]!.close).toHaveBeenCalled();
+    expect(signalingClient.leaveAndClose).toHaveBeenCalledTimes(1);
+  });
+
   it('ends the session on rate-limited and bad-message errors', async () => {
     for (const errorCode of ['rate-limited', 'bad-message'] as const) {
       const { server, sessionEvents } = await startSession();

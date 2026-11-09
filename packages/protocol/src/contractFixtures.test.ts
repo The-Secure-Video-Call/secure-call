@@ -79,7 +79,7 @@ describe('protocol version', () => {
 describe('limits', () => {
   it('accepts a payload of the maximum size and rejects one character more', () => {
     const maxPayload = 'A'.repeat(SIGNAL_PAYLOAD_MAX_LENGTH);
-    const signalAtLimit = { v: 1, type: 'signal', payload: maxPayload };
+    const signalAtLimit = { v: 1, type: 'signal', payload: maxPayload, iv: 'AAAAAAAAAAAAAAAA' };
     expect(clientMessageSchema.safeParse(signalAtLimit).success).toBe(true);
     const signalOverLimit = { ...signalAtLimit, payload: `${maxPayload}A` };
     expect(clientMessageSchema.safeParse(signalOverLimit).success).toBe(false);
@@ -91,8 +91,16 @@ describe('limits', () => {
     expect(clientMessageSchema.safeParse(joinWithRoomId('a'.repeat(21))).success).toBe(false);
     expect(clientMessageSchema.safeParse(joinWithRoomId('a'.repeat(44))).success).toBe(false);
   });
-  it('defaults a missing iv to null', () => {
-    const parsedMessage = serverMessageSchema.parse({ v: 1, type: 'signal', payload: 'AAAA' });
-    expect(parsedMessage).toMatchObject({ iv: null });
+  it('rejects a signal without iv or with a null iv, in both directions', () => {
+    const signalWithoutIv = { v: 1, type: 'signal', payload: 'AAAA' };
+    for (const signalMessage of [signalWithoutIv, { ...signalWithoutIv, iv: null }]) {
+      expect(serverMessageSchema.safeParse(signalMessage).success).toBe(false);
+      expect(clientMessageSchema.safeParse(signalMessage).success).toBe(false);
+    }
+    expect(parseServerMessage(JSON.stringify(signalWithoutIv)).ok).toBe(false);
+  });
+  it('accepts the room-expired error code', () => {
+    const roomExpiredError = { v: 1, type: 'error', code: 'room-expired' };
+    expect(serverMessageSchema.safeParse(roomExpiredError).success).toBe(true);
   });
 });

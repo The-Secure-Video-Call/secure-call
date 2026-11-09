@@ -13,6 +13,7 @@ import { useCallSession } from '@/rtc/useCallSession';
 const ENDED_REASON_TEXT: Record<CallSessionEndedReason, string> = {
   'hung-up': 'The call ended.',
   'room-full': 'This call already has two people, so you cannot join.',
+  'room-expired': 'This call link has expired. Start a new call.',
   'signaling-connection-lost': 'The connection to the server was lost.',
   'invalid-signaling-message': 'The server sent something unexpected, so the call was ended.',
   'message-not-sent': 'The call could not be set up on this device. Start a new call.',

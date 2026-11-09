@@ -13,11 +13,7 @@ export const signalMessageSchema = z.strictObject({
     .min(1)
     .max(SIGNAL_PAYLOAD_MAX_LENGTH)
     .regex(/^[A-Za-z0-9+/]+={0,2}$/),
-  // Base64 of 12 bytes. Optional in M1, required from M2.
-  iv: z
-    .string()
-    .regex(/^[A-Za-z0-9+/]{16}$/)
-    .nullable()
-    .default(null),
+  // Base64 of the 12-byte AES-GCM IV. Required: a signal without it is rejected.
+  iv: z.string().regex(/^[A-Za-z0-9+/]{16}$/),
 });
 export type SignalMessage = z.infer<typeof signalMessageSchema>;
