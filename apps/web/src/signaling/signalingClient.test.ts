@@ -58,12 +58,21 @@ describe('connectToSignalingServer', () => {
     const { receive, events } = connect();
     receive('{"v":1,"type":"joined","role":"second"}');
     receive('{"v":1,"type":"peer-joined"}');
-    receive('{"v":1,"type":"signal","payload":"QUJD"}');
+    receive('{"v":1,"type":"signal","payload":"QUJD","iv":"AAAAAAAAAAAAAAAA"}');
     receive('{"v":1,"type":"peer-left"}');
     expect(events.onJoined).toHaveBeenCalledWith('second');
     expect(events.onPeerJoined).toHaveBeenCalledTimes(1);
-    expect(events.onSignal).toHaveBeenCalledWith('QUJD', null);
+    expect(events.onSignal).toHaveBeenCalledWith('QUJD', 'AAAAAAAAAAAAAAAA');
     expect(events.onPeerLeft).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a server signal without iv and closes the connection', () => {
+    const { receive, events, fakeWebSocket } = connect();
+    receive('{"v":1,"type":"joined","role":"first"}');
+    receive('{"v":1,"type":"signal","payload":"QUJD"}');
+    expect(events.onSignal).not.toHaveBeenCalled();
+    expect(events.onClosed).toHaveBeenCalledWith('invalid-server-message');
+    expect(fakeWebSocket.close).toHaveBeenCalled();
   });
 
   it('reports server errors such as room-full', () => {

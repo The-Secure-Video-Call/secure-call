@@ -6,6 +6,7 @@ export const SERVER_ERROR_CODES = [
   'room-full',
   'rate-limited',
   'bad-message',
+  'room-expired',
   'unsupported-type',
 ] as const;
 

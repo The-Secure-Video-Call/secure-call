@@ -28,7 +28,7 @@ export type SignalingClientEvents = {
   onJoined(role: 'first' | 'second'): void;
   onPeerJoined(): void;
   onPeerLeft(): void;
-  /** `payload` is the opaque base64 ciphertext; `iv` is null only if the sender left it out. */
+  /** `payload` is the opaque base64 ciphertext; `iv` is always present (the schema requires it); the type allows null only so the codec's own missing-iv check stays a second line of defence. */
   onSignal(payload: string, iv: string | null): void;
   onServerError(errorCode: ServerErrorCode): void;
   onClosed(closedReason: SignalingClientClosedReason): void;

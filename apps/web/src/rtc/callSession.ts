@@ -35,6 +35,8 @@ export type CallPeerConnection = NegotiablePeerConnection &
 export type CallSessionEndedReason =
   | 'hung-up'
   | 'room-full'
+  /** The call link's time ran out on the server. */
+  | 'room-expired'
   | 'signaling-connection-lost'
   | 'invalid-signaling-message'
   /** A signaling message failed decryption or the checks on it: someone may be interfering. */
@@ -328,7 +330,12 @@ export function startCallSession(sessionOptions: {
       },
       onServerError(errorCode) {
         if (errorCode === 'room-full') endSession('room-full');
-        else {
+        else if (errorCode === 'room-expired') {
+          // End first (closing the socket reports `closed-by-us`, which would win as 'hung-up'),
+          // then close the peer connection (done by endSession) and the socket.
+          endSession('room-expired');
+          signalingClient?.leaveAndClose();
+        } else {
           // rate-limited / bad-message / unsupported-type mean our messages are being dropped,
           // so the call cannot be trusted to finish setting up: end it. (End first: closing the
           // socket reports `closed-by-us`, which would otherwise win as 'hung-up'.)
