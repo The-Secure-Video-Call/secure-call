@@ -1,0 +1,63 @@
+# CD: builds the web app and uploads it to securevideocall.com (ServerByt hosting) over
+# encrypted FTP (FTPS). Runs after every push to main, i.e. every merged PR, and can be
+# started by hand from the Actions tab. Each run waits until a reviewer of the "production"
+# environment approves it.
+#
+# Settings live in the "production" environment: variables FTP_SERVER and FTP_USERNAME,
+# secret FTP_PASSWORD.
+name: Deploy web app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; a newer one waits instead of interrupting an upload.
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://securevideocall.com
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # pnpm version comes from "packageManager" in package.json.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Never ship what CI would reject.
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+
+      - run: pnpm build
+
+      # Uploads only what changed since the last deploy (tracked in a state file on the
+      # server); files this action never uploaded are left alone.
+      - name: Upload to securevideocall.com over FTPS
+        uses: SamKirkland/FTP-Deploy-Action@110f9186c050f71550953127052e77650219c287 # v4.4.0
+        with:
+          server: ${{ vars.FTP_SERVER }}
+          username: ${{ vars.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          security: strict
+          local-dir: ./apps/web/dist/
+          server-dir: ./
