@@ -36,6 +36,11 @@ Inside `apps/web/src/`:
 
 `packages/protocol` is used straight from its TypeScript source (no build step).
 
+`packages/protocol/contract/` is a byte-for-byte copy of the backend's `protocol/` folder: JSON
+Schema in `schema/`, valid and invalid example messages in `fixtures/`, and the backend commit it
+came from in `SOURCE`. Work from this copy (Claude's GitHub runs can't download from other repos).
+Never edit it by hand: after the backend changes, run `pnpm protocol:sync` and commit the result.
+
 ## Code conventions
 
 - TypeScript in strict mode everywhere. No `any` without a comment explaining why.
