@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_TITLE } from '@/appTitle';
+import { ConnectionQualityIndicator } from '@/components/ConnectionQualityIndicator';
 import { SafetyCodeCheck } from '@/components/SafetyCodeCheck';
 import type { FingerprintPair } from '@/crypto/safetyCode';
 import { useLocalMediaStream } from '@/media/useLocalMediaStream';
@@ -9,6 +10,7 @@ import {
 } from '@/rtc/callConnectionStatus';
 import type { CallSessionEndedReason } from '@/rtc/callSession';
 import { useCallSession } from '@/rtc/useCallSession';
+import { useConnectionQuality } from '@/rtc/useConnectionQuality';
 
 const ENDED_REASON_TEXT: Record<CallSessionEndedReason, string> = {
   'hung-up': 'The call ended.',
@@ -49,6 +51,7 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     endedReason,
     hangUp,
     readSessionDescriptionSdps,
+    readConnectionStats,
   } = useCallSession(props.roomSecret, localMediaStream);
   // Which peer connection the person pressed Yes for, and the fingerprints the code was made from.
   // A new connection never counts as verified.
@@ -65,6 +68,10 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     : null;
   const [didCodesMismatch, setDidCodesMismatch] = useState(false);
   const [wasVerificationImpossible, setWasVerificationImpossible] = useState(false);
+  const connectionQuality = useConnectionQuality(
+    callConnectionStatus === 'connected' && endedReason === null,
+    readConnectionStats,
+  );
   const localVideoRef = useAttachMediaStream(localMediaStream);
   const remoteVideoRef = useAttachMediaStream(remoteMediaStream);
 
@@ -104,6 +111,9 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
       <p role="status" className="call-status">
         {statusText}
       </p>
+      {connectionQuality !== null && (
+        <ConnectionQualityIndicator connectionQuality={connectionQuality} />
+      )}
       {mediaErrorMessage !== null && <p role="alert">{mediaErrorMessage}</p>}
       {didCodesMismatch && (
         <p role="alert" className="safety-code-mismatch">

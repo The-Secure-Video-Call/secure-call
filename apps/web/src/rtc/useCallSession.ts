@@ -85,7 +85,12 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
     peerConnectionState,
     hasOtherPersonLeft,
   );
+  const readConnectionStats = useCallback(
+    () => callSessionRef.current?.readConnectionStats() ?? Promise.resolve(null),
+    [],
+  );
   return {
+    readConnectionStats,
     remoteMediaStream,
     callConnectionStatus,
     peerConnectionNumber,

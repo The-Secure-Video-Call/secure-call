@@ -16,6 +16,7 @@ function createMockPeerConnection() {
     currentLocalDescription: null,
     currentRemoteDescription: null,
     connectionState: 'new',
+    getStats: vi.fn(async () => new Map() as unknown as RTCStatsReport),
     onnegotiationneeded: null as ((negotiationNeededEvent: Event) => void) | null,
     onicecandidate: null,
     ontrack: null as ((trackEvent: RTCTrackEvent) => void) | null,
