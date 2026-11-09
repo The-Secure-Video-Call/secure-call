@@ -76,6 +76,7 @@ No accounts, no installs: one person creates a call, shares a link, the other op
 ### 3.3 What the servers can still see (be honest about this in the docs)
 - **Signaling server:** the derived room ID, both IP addresses, when the call starts and ends, and the size and timing of the encrypted messages.
 - **TURN relay (when used):** both IP addresses, call length, and bandwidth. It cannot see the content.
+- **Database (future accounts only):** account details a user gives us. Never room IDs, call times, IP addresses or message contents.
 - **Nobody** sees: video, audio, chat, the room secret, or the safety code.
 
 ### 3.4 The web app trust problem
@@ -104,7 +105,8 @@ A web app is only as trustworthy as the JavaScript the server sends. If someone 
 | Web client | **React + Vite** | Fast dev loop, small production bundle, huge ecosystem |
 | Styling | Tailwind CSS or plain CSS modules | No runtime CSS-in-JS needed |
 | Crypto | **Web Crypto API** (built into browsers) | No third-party crypto library to audit; HKDF, AES-GCM, SHA-256 are all built in |
-| Signaling server | **Python 3.14 + Django 6.1 + Channels (Daphne)**, in the separate repo [secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend) | Mature framework with built-in security settings; WebSockets through Channels; no database needed |
+| Signaling server | **Python 3.14 + Django 6.1 + Channels (Daphne)**, in the separate repo [secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend) | Mature framework with built-in security settings; WebSockets through Channels |
+| Database | **PostgreSQL 18** on the same machine as the backend (the Raspberry Pi while testing), connected but empty | Reserved for future user accounts; never holds call data; never reachable from the internet |
 | Validation | **Pydantic 2** on the server (source of truth) + **zod** in the browser | Both are tested against the same JSON Schema and example messages |
 | TURN/STUN | **coturn** (self-hosted) | Industry standard, supports time-limited credentials |
 | Reverse proxy / TLS | **Caddy** | Automatic HTTPS certificates, simple config |
@@ -164,6 +166,7 @@ secure-call-backend/
 │   ├── schema/                 # JSON Schema exported from the Pydantic models
 │   └── fixtures/               # valid/ and invalid/ example messages, used by both repos
 ├── tests/                      # pytest
+├── deploy/raspberry-pi/        # Docker Compose for PostgreSQL on the test Pi
 ├── .github/workflows/          # CI: ruff, mypy, pytest, Django deploy checks, pip-audit
 ├── SECURITY.md
 ├── LICENSE
@@ -285,7 +288,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 - **Installable PWA** for a more app-like feel.
 - **Flutter mobile client** (`flutter_webrtc`) speaking the same signaling protocol, so the server doesn't change.
 - **Group calls**: add an SFU (e.g. LiveKit or mediasoup) and a second encryption layer with **Encoded Transforms** (`RTCRtpScriptTransform`) so the SFU forwards video it can't decrypt.
-- **Accounts and contacts**, only if needed, ideally with passkeys and end-to-end-encrypted contact lists.
+- **Accounts and contacts**, ideally with passkeys and end-to-end-encrypted contact lists. The PostgreSQL connection is already in place (secure-call-backend); the tables and what they hold get decided here first.
 
 ---
 
