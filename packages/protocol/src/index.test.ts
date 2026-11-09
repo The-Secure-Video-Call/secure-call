@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { protocolVersionSchema } from './index';
+import { protocolVersionSchema } from '@protocol/index';
 
 describe('protocolVersionSchema', () => {
   it('accepts version 1', () => {

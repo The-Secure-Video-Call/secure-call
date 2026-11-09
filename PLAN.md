@@ -126,10 +126,13 @@ secure-call/
 ├── apps/
 │   ├── web/                    # React client
 │   │   └── src/
-│   │       ├── crypto/         # HKDF, AES-GCM, safety code (pure functions, heavily tested)
+│   │       ├── pages/          # One file per screen: LobbyPage, CallPage, ...
+│   │       ├── components/     # UI pieces shared by several pages (safety-code dialog, controls)
+│   │       ├── crypto/         # Secret, room ID, HKDF, AES-GCM, safety code (pure functions, heavily tested)
+│   │       ├── media/          # Camera and microphone
 │   │       ├── rtc/            # RTCPeerConnection setup, "perfect negotiation", ICE restart
 │   │       ├── signaling/      # WebSocket client, encrypt/decrypt wrapper
-│   │       ├── ui/             # Lobby, call screen, safety-code dialog, controls
+│   │       ├── App.tsx         # Picks the page for the current link
 │   │       └── main.tsx
 ├── packages/
 │   └── protocol/               # zod schemas + TypeScript types, tested against the backend's protocol fixtures
