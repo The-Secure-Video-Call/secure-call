@@ -224,16 +224,16 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 **Demo:** green CI on an empty app.
 
 ### M1 — Basic working call (not yet hardened)
-- [ ] Signaling server (`secure-call-backend`): rooms, 2-person limit, forward messages, peer-joined/left events
-- [ ] Lobby page: "New call" button generates a link; camera/mic preview; device picker
-- [ ] Call page: local and remote video, mute, camera on/off, hang up
-- [ ] WebRTC with the "perfect negotiation" pattern (handles both sides offering at once)
-- [ ] Public STUN for now
+- [x] Signaling server (`secure-call-backend`): rooms, 2-person limit, forward messages, peer-joined/left events
+- [x] Lobby page: "New call" button generates a link; camera/mic preview; device picker
+- [x] Call page: local and remote video, mute, camera on/off, hang up
+- [x] WebRTC with the "perfect negotiation" pattern (handles both sides offering at once)
+- [x] Public STUN for now
 
 **Demo:** two browser tabs on the same machine have a video call.
 
 ### M2 — End-to-end security layer
-- [ ] Generate the secret, derive `roomId` and `signalKey` with HKDF (Web Crypto)
+- [x] Generate the secret, derive `roomId` and `signalKey` with HKDF (Web Crypto)
 - [ ] Encrypt/decrypt every signaling message with AES-256-GCM; sender role + `seq` in AAD; reject replays
 - [ ] Safety code from both DTLS fingerprints; match/no-match dialog
 - [ ] Room expiry timers; nothing written to disk
