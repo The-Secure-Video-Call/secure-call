@@ -15,13 +15,15 @@ type SafetyCodeState =
  */
 export function SafetyCodeCheck(props: {
   readSessionDescriptionSdps(): { localSdp: string; remoteSdp: string } | null;
+  /** Whether the person already pressed Yes for the current peer connection (owned by the page). */
+  isVerified: boolean;
+  onCodesMatch(): void;
   onCodesDoNotMatch(): void;
   /** The fingerprints could not be read, so the call cannot be verified; must end the call. */
   onVerificationFailed(): void;
 }) {
   const { readSessionDescriptionSdps, onVerificationFailed } = props;
   const [safetyCodeState, setSafetyCodeState] = useState<SafetyCodeState>({ kind: 'computing' });
-  const [areCodesConfirmedToMatch, setAreCodesConfirmedToMatch] = useState(false);
   const [isShownAsNumbers, setIsShownAsNumbers] = useState(false);
 
   useEffect(() => {
@@ -54,7 +56,7 @@ export function SafetyCodeCheck(props: {
 
   if (safetyCodeState.kind === 'unavailable') return null; // the page shows why the call ended
 
-  if (areCodesConfirmedToMatch) {
+  if (props.isVerified) {
     return <p className="safety-code-verified">✔ Verified</p>;
   }
 
@@ -83,7 +85,7 @@ export function SafetyCodeCheck(props: {
       </label>
       <p>Read your code out loud to the other person, or ask them to read theirs.</p>
       <div className="safety-code-buttons">
-        <button type="button" onClick={() => setAreCodesConfirmedToMatch(true)}>
+        <button type="button" onClick={props.onCodesMatch}>
           Yes, the codes match
         </button>
         <button type="button" className="hang-up-button" onClick={props.onCodesDoNotMatch}>

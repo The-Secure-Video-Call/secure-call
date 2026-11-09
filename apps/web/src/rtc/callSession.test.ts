@@ -8,6 +8,8 @@ function createMockPeerConnection() {
     signalingState: 'stable',
     localDescription: null,
     remoteDescription: null,
+    currentLocalDescription: null,
+    currentRemoteDescription: null,
     connectionState: 'new',
     onnegotiationneeded: null,
     onicecandidate: null,
@@ -33,6 +35,7 @@ function startSession() {
     return signalingClient;
   });
   const sessionEvents = {
+    onPeerConnectionOpened: vi.fn(),
     onRemoteMediaStream: vi.fn(),
     onPeerConnectionStateChange: vi.fn(),
     onSessionProblem: vi.fn(),
@@ -104,13 +107,41 @@ describe('call session', () => {
     server().onJoined('second');
     const peerConnection = peerConnections[0]!;
     expect(callSession.readSessionDescriptionSdps()).toBeNull();
-    peerConnection.localDescription = { type: 'answer', sdp: 'local-sdp' } as never;
+    peerConnection.currentLocalDescription = { type: 'answer', sdp: 'local-sdp' } as never;
     expect(callSession.readSessionDescriptionSdps()).toBeNull();
-    peerConnection.remoteDescription = { type: 'offer', sdp: 'remote-sdp' } as never;
+    peerConnection.currentRemoteDescription = { type: 'offer', sdp: 'remote-sdp' } as never;
     expect(callSession.readSessionDescriptionSdps()).toEqual({
       localSdp: 'local-sdp',
       remoteSdp: 'remote-sdp',
     });
+  });
+
+  it('ignores pending descriptions that are not the ones in use yet', () => {
+    const { callSession, server, peerConnections } = startSession();
+    server().onJoined('second');
+    const peerConnection = peerConnections[0]!;
+    peerConnection.localDescription = { type: 'offer', sdp: 'pending-local' } as never;
+    peerConnection.remoteDescription = { type: 'answer', sdp: 'pending-remote' } as never;
+    expect(callSession.readSessionDescriptionSdps()).toBeNull();
+  });
+
+  it('announces every new peer connection with a new number, so "verified" cannot carry over', () => {
+    const { server, sessionEvents } = startSession();
+    server().onJoined('first');
+    server().onPeerJoined();
+    server().onPeerLeft();
+    server().onPeerJoined(); // someone else arrives with the same link
+    const [firstNumber, secondNumber] = sessionEvents.onPeerConnectionOpened.mock.calls.map(
+      (call) => call[0] as number,
+    );
+    expect(secondNumber).toBe(firstNumber! + 1);
+
+    // A brand-new session must not start counting from the beginning again.
+    const nextSession = startSession();
+    nextSession.server().onJoined('second');
+    expect(nextSession.sessionEvents.onPeerConnectionOpened).toHaveBeenCalledWith(
+      secondNumber! + 1,
+    );
   });
 
   it('hanging up (what "No, the codes differ" does) closes the connection and the socket', () => {

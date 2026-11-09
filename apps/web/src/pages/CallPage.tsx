@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_TITLE } from '@/appTitle';
 import { SafetyCodeCheck } from '@/components/SafetyCodeCheck';
 import { useLocalMediaStream } from '@/media/useLocalMediaStream';
-import { CALL_CONNECTION_STATUS_TEXT } from '@/rtc/callConnectionStatus';
+import {
+  describeCallConnectionStatusText,
+  isPeerConnectionVerified,
+} from '@/rtc/callConnectionStatus';
 import type { CallSessionEndedReason } from '@/rtc/callSession';
 import { useCallSession } from '@/rtc/useCallSession';
 
@@ -36,10 +39,19 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
   const {
     remoteMediaStream,
     callConnectionStatus,
+    peerConnectionNumber,
     endedReason,
     hangUp,
     readSessionDescriptionSdps,
   } = useCallSession(props.roomSecret, localMediaStream);
+  // Which peer connection the person pressed Yes for; a new connection never counts as verified.
+  const [verifiedPeerConnectionNumber, setVerifiedPeerConnectionNumber] = useState<number | null>(
+    null,
+  );
+  const isConnectionVerified = isPeerConnectionVerified(
+    verifiedPeerConnectionNumber,
+    peerConnectionNumber,
+  );
   const [didCodesMismatch, setDidCodesMismatch] = useState(false);
   const [wasVerificationImpossible, setWasVerificationImpossible] = useState(false);
   const localVideoRef = useAttachMediaStream(localMediaStream);
@@ -73,7 +85,7 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
       ? ENDED_REASON_TEXT[endedReason]
       : localMediaStream === null && mediaErrorMessage === null
         ? 'Starting camera and microphone…'
-        : CALL_CONNECTION_STATUS_TEXT[callConnectionStatus];
+        : describeCallConnectionStatusText(callConnectionStatus, isConnectionVerified);
 
   return (
     <main className="call-page">
@@ -94,6 +106,9 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
       )}
       {callConnectionStatus === 'connected' && endedReason === null && (
         <SafetyCodeCheck
+          key={peerConnectionNumber}
+          isVerified={isConnectionVerified}
+          onCodesMatch={() => setVerifiedPeerConnectionNumber(peerConnectionNumber)}
           readSessionDescriptionSdps={readSessionDescriptionSdps}
           onCodesDoNotMatch={endCallBecauseCodesDiffer}
           onVerificationFailed={endCallBecauseItCannotBeVerified}

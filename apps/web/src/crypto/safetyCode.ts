@@ -10,9 +10,8 @@ const SAFETY_CODE_BYTES_USED = 5; // 36 bits fit in 5 bytes (40 bits); the last 
 const FINGERPRINT_SEPARATOR = '\n'; // cannot occur inside a normalised fingerprint
 const FINGERPRINT_LINE_PREFIX = 'a=fingerprint:';
 
-/** Digest sizes in bytes for the hash names that WebRTC (RFC 8122) allows. */
+/** Digest sizes in bytes for the accepted hash names. sha-1 is deliberately not accepted. */
 const FINGERPRINT_BYTES_BY_HASH_NAME: ReadonlyMap<string, number> = new Map([
-  ['sha-1', 20],
   ['sha-256', 32],
   ['sha-384', 48],
   ['sha-512', 64],

@@ -54,6 +54,10 @@ describe('readFingerprintFromSdp', () => {
 
   it.each([
     ['no hex part', 'a=fingerprint:sha-256'],
+    [
+      'sha-1 is not accepted',
+      `a=fingerprint:sha-1 ${firstFingerprintHex.split(':').slice(0, 20).join(':')}`,
+    ],
     ['unknown hash', `a=fingerprint:md5 ${firstFingerprintHex}`],
     ['prototype property as hash', `a=fingerprint:constructor ${firstFingerprintHex}`],
     ['non-hex characters', `a=fingerprint:sha-256 ${firstFingerprintHex.replace('00', 'ZZ')}`],
@@ -102,6 +106,13 @@ describe('computeSafetyCodeIndices', () => {
       Number((first36Bits >> shift) & 63n),
     );
     expect(await computeSafetyCodeIndices(firstSdp, secondSdp)).toEqual(expectedIndices);
+  });
+
+  it('gives the known answer computed outside our code', async () => {
+    // Computed with Python hashlib, not with this code: the strings `sha-256 <firstFingerprintHex>`
+    // and `sha-256 <secondFingerprintHex>`, sorted and joined with "\n", hash with SHA-256 to
+    // something starting 9f0f827a16; its first 36 bits as six 6-bit numbers are these indices.
+    expect(await computeSafetyCodeIndices(firstSdp, secondSdp)).toEqual([39, 48, 62, 2, 30, 33]);
   });
 
   it('is the same when local and remote are swapped', async () => {

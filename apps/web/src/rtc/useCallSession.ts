@@ -16,6 +16,7 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
   const [peerConnectionState, setPeerConnectionState] = useState<RTCPeerConnectionState | null>(
     null,
   );
+  const [peerConnectionNumber, setPeerConnectionNumber] = useState(0);
   const [hasOtherPersonLeft, setHasOtherPersonLeft] = useState(false);
   const [endedReason, setEndedReason] = useState<CallSessionEndedReason | null>(null);
   const callSessionRef = useRef<CallSession | null>(null);
@@ -31,6 +32,9 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
         signalingUrl: resolveSignalingUrl(import.meta.env.VITE_SIGNALING_URL),
         localMediaStream,
         events: {
+          onPeerConnectionOpened(newPeerConnectionNumber) {
+            if (!isEffectCancelled) setPeerConnectionNumber(newPeerConnectionNumber);
+          },
           onRemoteMediaStream(newRemoteMediaStream) {
             if (isEffectCancelled) return;
             setRemoteMediaStream(newRemoteMediaStream);
@@ -77,6 +81,7 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
   return {
     remoteMediaStream,
     callConnectionStatus,
+    peerConnectionNumber,
     endedReason,
     hangUp,
     readSessionDescriptionSdps,

@@ -23,7 +23,8 @@ export type CallPeerConnection = NegotiablePeerConnection &
     | 'addTrack'
     | 'close'
     | 'connectionState'
-    | 'remoteDescription'
+    | 'currentLocalDescription'
+    | 'currentRemoteDescription'
     | 'ontrack'
     | 'onconnectionstatechange'
   >;
@@ -32,6 +33,11 @@ export type CallSessionEndedReason =
   'hung-up' | 'room-full' | 'signaling-connection-lost' | 'invalid-signaling-message';
 
 export type CallSessionEvents = {
+  /**
+   * A new peer connection was created (the other person arrived). The number grows with every
+   * connection, so anything decided about one connection (like "verified") can be tied to it.
+   */
+  onPeerConnectionOpened(peerConnectionNumber: number): void;
   /** The remote stream, or null when the other person left. */
   onRemoteMediaStream(remoteMediaStream: MediaStream | null): void;
   onPeerConnectionStateChange(peerConnectionState: RTCPeerConnectionState): void;
@@ -52,6 +58,12 @@ export type CallSession = {
    */
   readSessionDescriptionSdps(): { localSdp: string; remoteSdp: string } | null;
 };
+
+/**
+ * Counts peer connections across ALL sessions in this page, never resetting, so a number is never
+ * reused when a new session starts and a "verified" decision cannot carry over to it.
+ */
+let lastPeerConnectionNumber = 0;
 
 /**
  * Joins the room and runs one call: signaling client + one RTCPeerConnection at a time, using
@@ -111,6 +123,8 @@ export function startCallSession(sessionOptions: {
       onNegotiationError: events.onSessionProblem,
     });
     current = { peerConnection, negotiation };
+    lastPeerConnectionNumber += 1;
+    events.onPeerConnectionOpened(lastPeerConnectionNumber);
     peerConnection.ontrack = (trackEvent) => {
       const [remoteMediaStream] = trackEvent.streams;
       if (remoteMediaStream !== undefined) events.onRemoteMediaStream(remoteMediaStream);
@@ -177,8 +191,10 @@ export function startCallSession(sessionOptions: {
 
   return {
     readSessionDescriptionSdps() {
-      const localDescription = current?.peerConnection.localDescription;
-      const remoteDescription = current?.peerConnection.remoteDescription;
+      // The "current" descriptions are the ones the connection is really using; a pending offer
+      // that is not agreed yet must not feed the safety code.
+      const localDescription = current?.peerConnection.currentLocalDescription;
+      const remoteDescription = current?.peerConnection.currentRemoteDescription;
       if (!localDescription || !remoteDescription) return null;
       return { localSdp: localDescription.sdp, remoteSdp: remoteDescription.sdp };
     },
