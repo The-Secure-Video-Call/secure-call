@@ -236,7 +236,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 - [x] Generate the secret, derive `roomId` and `signalKey` with HKDF (Web Crypto)
 - [x] Encrypt/decrypt every signaling message with AES-256-GCM; sender role + `seq` in AAD; reject replays
 - [x] Safety code from both DTLS fingerprints; match/no-match dialog
-- [ ] Room expiry timers; nothing written to disk
+- [x] Room expiry timers; nothing written to disk
 - [x] Unit tests for every crypto function, including a "tampered message is rejected" test
 - [x] Write `docs/threat-model.md` and `docs/protocol.md`
 
