@@ -206,7 +206,7 @@ sides agree on what a valid message is.
 | `error` | `code: "room-full" \| "rate-limited" \| "bad-message"` | Something went wrong |
 
 **Inside the encrypted payload** (only the browsers see this):
-`{ kind: "offer" | "answer" | "candidate" | "bye", data, seq }`, where `seq` is a counter that blocks replayed messages.
+`{ kind: "hello" | "offer" | "answer" | "candidate" | "bye", data, seq }`, where `seq` is a counter that blocks replayed messages. `hello` carries a fresh random session ID and is the first message each side sends; the AAD layout and session binding are described in `apps/web/src/crypto/signalEncryption.ts`.
 
 ---
 
@@ -234,10 +234,10 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 
 ### M2 — End-to-end security layer
 - [x] Generate the secret, derive `roomId` and `signalKey` with HKDF (Web Crypto)
-- [ ] Encrypt/decrypt every signaling message with AES-256-GCM; sender role + `seq` in AAD; reject replays
+- [x] Encrypt/decrypt every signaling message with AES-256-GCM; sender role + `seq` in AAD; reject replays
 - [x] Safety code from both DTLS fingerprints; match/no-match dialog
 - [ ] Room expiry timers; nothing written to disk
-- [ ] Unit tests for every crypto function, including a "tampered message is rejected" test
+- [x] Unit tests for every crypto function, including a "tampered message is rejected" test
 - [ ] Write `docs/threat-model.md` and `docs/protocol.md`
 
 **Demo:** a server log shows only unreadable ciphertext; changing one byte makes the call refuse to connect.

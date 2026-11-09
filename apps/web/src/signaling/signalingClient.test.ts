@@ -112,24 +112,25 @@ describe('connectToSignalingServer', () => {
     expect(events.onClosed).toHaveBeenCalledWith('invalid-server-message');
   });
 
-  it('wraps a payload in a signal message with iv null', () => {
+  it('wraps a payload and its iv in a signal message', () => {
     const { client, receive, sentTexts } = connect();
     receive('{"v":1,"type":"joined","role":"first"}');
-    client.sendSignal('QUJD');
+    client.sendSignal('QUJD', 'AAAAAAAAAAAAAAAA');
     expect(JSON.parse(sentTexts[0]!)).toEqual({
       v: 1,
       type: 'signal',
       payload: 'QUJD',
-      iv: null,
+      iv: 'AAAAAAAAAAAAAAAA',
     });
   });
 
   it('refuses to send an invalid or too-early signal', () => {
     const { client, receive } = connect();
-    expect(() => client.sendSignal('QUJD')).toThrow();
+    expect(() => client.sendSignal('QUJD', 'AAAAAAAAAAAAAAAA')).toThrow();
     receive('{"v":1,"type":"joined","role":"first"}');
-    expect(() => client.sendSignal('not base64!')).toThrow();
-    expect(() => client.sendSignal('A'.repeat(64513))).toThrow();
+    expect(() => client.sendSignal('not base64!', 'AAAAAAAAAAAAAAAA')).toThrow();
+    expect(() => client.sendSignal('A'.repeat(64513), 'AAAAAAAAAAAAAAAA')).toThrow();
+    expect(() => client.sendSignal('QUJD', 'short')).toThrow();
   });
 
   it('sends leave and closes when asked', () => {
