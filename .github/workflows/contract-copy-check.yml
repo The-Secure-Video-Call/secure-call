@@ -1,0 +1,81 @@
+# Weekly check that the pinned copy of the backend's message contract
+# (packages/protocol/contract/) still matches the backend's main branch.
+# If it doesn't, it opens an issue (or comments on the open one) listing what changed.
+# Updating stays a deliberate step: run `pnpm protocol:sync`, review the diff, open a PR.
+name: Contract copy check
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # every Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          repository: The-Secure-Video-Call/secure-call-backend
+          path: .reference/secure-call-backend
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Compare the copy with the backend's main
+        id: compare
+        run: |
+          backend_main_commit=$(git -C .reference/secure-call-backend rev-parse HEAD)
+          pinned_commit=$(sed -n 's/^commit: //p' packages/protocol/contract/SOURCE)
+          echo "backend_main_commit=$backend_main_commit" >> "$GITHUB_OUTPUT"
+          echo "pinned_commit=$pinned_commit" >> "$GITHUB_OUTPUT"
+          if diff -rq --exclude=SOURCE .reference/secure-call-backend/protocol packages/protocol/contract > contract-differences.txt; then
+            echo "The copy matches the backend's main ($backend_main_commit)."
+            echo "copy_is_current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "The copy differs from the backend's main:"
+            cat contract-differences.txt
+            echo "copy_is_current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the issue
+        if: steps.compare.outputs.copy_is_current == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BACKEND_MAIN_COMMIT: ${{ steps.compare.outputs.backend_main_commit }}
+          PINNED_COMMIT: ${{ steps.compare.outputs.pinned_commit }}
+        run: |
+          issue_title="Protocol contract copy is behind secure-call-backend"
+          changed_files=$(sed -e 's#\.reference/secure-call-backend/protocol#backend#g' \
+                              -e 's#packages/protocol/contract#copy#g' \
+                              -e 's#^#- #' contract-differences.txt)
+          {
+            echo "The pinned copy in \`packages/protocol/contract/\` no longer matches the backend's \`main\`."
+            echo
+            echo "- Copy taken from backend commit: \`$PINNED_COMMIT\`"
+            echo "- Backend \`main\` is now at: \`$BACKEND_MAIN_COMMIT\`"
+            echo
+            echo "**What differs**"
+            echo
+            echo "$changed_files"
+            echo
+            echo "**To update**: run \`pnpm protocol:sync\`, check that \`pnpm test\` passes (the zod schemas may need to change too), and open a PR."
+            echo
+            echo "_Opened by the weekly contract copy check (\`.github/workflows/contract-copy-check.yml\`)._"
+          } > issue-body.md
+          open_issue_number=$(gh issue list --state open --search "in:title \"$issue_title\"" --json number,title \
+            --jq "map(select(.title == \"$issue_title\")) | first | .number // empty")
+          if [ -n "$open_issue_number" ]; then
+            gh issue comment "$open_issue_number" --body-file issue-body.md
+            echo "Commented on issue #$open_issue_number"
+          else
+            gh issue create --title "$issue_title" --body-file issue-body.md
+          fi
