@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { hkdfSha256 } from '@/crypto/hkdf';
+import { deriveRoomId } from '@/crypto/roomId';
 import { SECRET_BYTES } from '@/crypto/secret';
 import { SIGNAL_KEY_BYTES, deriveSignalKey, deriveSignalKeyBytes } from '@/crypto/signalKey';
 
@@ -19,6 +20,26 @@ describe('deriveSignalKey', () => {
       32,
     );
     expect(signalKeyBytes).toEqual(expectedBytes);
+  });
+
+  // Known-answer vector, computed outside our code with Python hmac + hashlib (HKDF-SHA256,
+  // RFC 5869) and cross-checked with OpenSSL 3.6 (`openssl kdf ... HKDF`). Input: secret = 32
+  // bytes of 0x01, empty salt. info "signal" -> 32 bytes; info "room" -> first 16 bytes.
+  const knownAnswerSignalKeyHex =
+    '0c93a41be59992a0c3bdd12a3dda9b29c3dca5aa380d10ee809c9d022c5ec281';
+  // Room ID bytes were b14b4b0fa71ea2080d5351d8dd211054; this is their unpadded base64url.
+  const knownAnswerRoomId = 'sUtLD6ceoggNU1HY3SEQVA';
+
+  function bytesToHex(bytesToConvert: Uint8Array): string {
+    return [...bytesToConvert].map((byteValue) => byteValue.toString(16).padStart(2, '0')).join('');
+  }
+
+  it('matches the known-answer vector for the signal key bytes', async () => {
+    expect(bytesToHex(await deriveSignalKeyBytes(firstRoomSecret))).toBe(knownAnswerSignalKeyHex);
+  });
+
+  it('matches the known-answer vector for the room ID', async () => {
+    expect(await deriveRoomId(firstRoomSecret)).toBe(knownAnswerRoomId);
   });
 
   it('uses different bytes for "signal" than for "room" (domain separation)', async () => {
