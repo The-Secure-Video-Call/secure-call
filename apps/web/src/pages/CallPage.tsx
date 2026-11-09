@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_TITLE } from '@/appTitle';
+import { SafetyCodeCheck } from '@/components/SafetyCodeCheck';
 import { useLocalMediaStream } from '@/media/useLocalMediaStream';
 import { CALL_CONNECTION_STATUS_TEXT } from '@/rtc/callConnectionStatus';
 import type { CallSessionEndedReason } from '@/rtc/callSession';
@@ -32,10 +33,15 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     toggleCameraOff,
     stopLocalMedia,
   } = useLocalMediaStream();
-  const { remoteMediaStream, callConnectionStatus, endedReason, hangUp } = useCallSession(
-    props.roomSecret,
-    localMediaStream,
-  );
+  const {
+    remoteMediaStream,
+    callConnectionStatus,
+    endedReason,
+    hangUp,
+    readSessionDescriptionSdps,
+  } = useCallSession(props.roomSecret, localMediaStream);
+  const [didCodesMismatch, setDidCodesMismatch] = useState(false);
+  const [wasVerificationImpossible, setWasVerificationImpossible] = useState(false);
   const localVideoRef = useAttachMediaStream(localMediaStream);
   const remoteVideoRef = useAttachMediaStream(remoteMediaStream);
 
@@ -49,6 +55,18 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     stopLocalMedia();
     props.onReturnToLobby();
   }
+
+  /** "No": close the peer connection and the socket, and warn. */
+  function endCallBecauseCodesDiffer() {
+    setDidCodesMismatch(true);
+    hangUp();
+  }
+
+  /** Fingerprints unreadable: the call cannot be verified, so it is ended (fail closed). */
+  const endCallBecauseItCannotBeVerified = useCallback(() => {
+    setWasVerificationImpossible(true);
+    hangUp();
+  }, [hangUp]);
 
   const statusText =
     endedReason !== null
@@ -64,6 +82,23 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
         {statusText}
       </p>
       {mediaErrorMessage !== null && <p role="alert">{mediaErrorMessage}</p>}
+      {didCodesMismatch && (
+        <p role="alert" className="safety-code-mismatch">
+          The codes didn&apos;t match. Someone may be listening in. The call was ended.
+        </p>
+      )}
+      {wasVerificationImpossible && (
+        <p role="alert" className="safety-code-mismatch">
+          This call could not be verified, so it was ended.
+        </p>
+      )}
+      {callConnectionStatus === 'connected' && endedReason === null && (
+        <SafetyCodeCheck
+          readSessionDescriptionSdps={readSessionDescriptionSdps}
+          onCodesDoNotMatch={endCallBecauseCodesDiffer}
+          onVerificationFailed={endCallBecauseItCannotBeVerified}
+        />
+      )}
       <div className="call-videos">
         <video
           ref={remoteVideoRef}

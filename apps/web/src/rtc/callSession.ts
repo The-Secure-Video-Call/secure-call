@@ -20,7 +20,12 @@ export const PUBLIC_STUN_ICE_SERVERS: RTCIceServer[] = [
 export type CallPeerConnection = NegotiablePeerConnection &
   Pick<
     RTCPeerConnection,
-    'addTrack' | 'close' | 'connectionState' | 'ontrack' | 'onconnectionstatechange'
+    | 'addTrack'
+    | 'close'
+    | 'connectionState'
+    | 'remoteDescription'
+    | 'ontrack'
+    | 'onconnectionstatechange'
   >;
 
 export type CallSessionEndedReason =
@@ -39,7 +44,14 @@ export type CallSessionEvents = {
   onSessionEnded(endedReason: CallSessionEndedReason): void;
 };
 
-export type CallSession = { hangUp(): void };
+export type CallSession = {
+  hangUp(): void;
+  /**
+   * The SDP of both descriptions of the current connection, for the safety code; null if there
+   * is no connection or negotiation has not set both. Never log or send the returned values.
+   */
+  readSessionDescriptionSdps(): { localSdp: string; remoteSdp: string } | null;
+};
 
 /**
  * Joins the room and runs one call: signaling client + one RTCPeerConnection at a time, using
@@ -164,6 +176,12 @@ export function startCallSession(sessionOptions: {
   });
 
   return {
+    readSessionDescriptionSdps() {
+      const localDescription = current?.peerConnection.localDescription;
+      const remoteDescription = current?.peerConnection.remoteDescription;
+      if (!localDescription || !remoteDescription) return null;
+      return { localSdp: localDescription.sdp, remoteSdp: remoteDescription.sdp };
+    },
     hangUp() {
       if (hasEnded) return;
       if (current !== null) sendPayload({ kind: 'bye', data: null });

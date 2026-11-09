@@ -69,7 +69,7 @@ No accounts, no installs: one person creates a call, shares a link, the other op
 ### 3.2 Safety code details
 1. Read the local DTLS fingerprint from `pc.localDescription.sdp` and the remote one from `pc.remoteDescription.sdp` (`a=fingerprint:` lines).
 2. Sort the two fingerprints so both sides get the same order, then join them.
-3. `SHA-256` the result and take the first 36 bits → 6 emoji from a fixed 64-emoji list (or 3 groups of 3 digits for accessibility).
+3. `SHA-256` the result and take the first 36 bits → 6 emoji from a fixed 64-emoji list (or the same six indices as two-digit numbers `00`–`63` for accessibility).
 4. If someone is in the middle, each side sees a different pair of fingerprints, so the codes **will not match**.
 5. UI: show the code with "Ask the other person to read their code. Do they match?" plus **Yes** / **No** buttons. **No** ends the call and shows a warning.
 
@@ -235,7 +235,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 ### M2 — End-to-end security layer
 - [ ] Generate the secret, derive `roomId` and `signalKey` with HKDF (Web Crypto)
 - [ ] Encrypt/decrypt every signaling message with AES-256-GCM; sender role + `seq` in AAD; reject replays
-- [ ] Safety code from both DTLS fingerprints; match/no-match dialog
+- [x] Safety code from both DTLS fingerprints; match/no-match dialog
 - [ ] Room expiry timers; nothing written to disk
 - [ ] Unit tests for every crypto function, including a "tampered message is rejected" test
 - [ ] Write `docs/threat-model.md` and `docs/protocol.md`

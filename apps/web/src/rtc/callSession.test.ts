@@ -7,6 +7,7 @@ function createMockPeerConnection() {
   return {
     signalingState: 'stable',
     localDescription: null,
+    remoteDescription: null,
     connectionState: 'new',
     onnegotiationneeded: null,
     onicecandidate: null,
@@ -95,6 +96,31 @@ describe('call session', () => {
       data: { type: 'answer', sdp: 'my-answer' },
       seq: 0,
     });
+  });
+
+  it('reads both descriptions only when both are set', () => {
+    const { callSession, server, peerConnections } = startSession();
+    expect(callSession.readSessionDescriptionSdps()).toBeNull();
+    server().onJoined('second');
+    const peerConnection = peerConnections[0]!;
+    expect(callSession.readSessionDescriptionSdps()).toBeNull();
+    peerConnection.localDescription = { type: 'answer', sdp: 'local-sdp' } as never;
+    expect(callSession.readSessionDescriptionSdps()).toBeNull();
+    peerConnection.remoteDescription = { type: 'offer', sdp: 'remote-sdp' } as never;
+    expect(callSession.readSessionDescriptionSdps()).toEqual({
+      localSdp: 'local-sdp',
+      remoteSdp: 'remote-sdp',
+    });
+  });
+
+  it('hanging up (what "No, the codes differ" does) closes the connection and the socket', () => {
+    const { callSession, server, peerConnections, signalingClient, sessionEvents } = startSession();
+    server().onJoined('second');
+    callSession.hangUp();
+    expect(peerConnections[0]!.close).toHaveBeenCalled();
+    expect(signalingClient.leaveAndClose).toHaveBeenCalled();
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('hung-up');
+    expect(callSession.readSessionDescriptionSdps()).toBeNull();
   });
 
   it('drops a replayed payload', async () => {

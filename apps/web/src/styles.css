@@ -80,3 +80,43 @@ body {
   background: #d93025;
   color: #fff;
 }
+
+.safety-code-check {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: center;
+  text-align: center;
+}
+
+.safety-code-value {
+  margin: 0;
+  font-size: 2rem;
+  letter-spacing: 0.1em;
+}
+
+.safety-code-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.safety-code-buttons button {
+  min-height: 2.75rem;
+  padding: 0 1.25rem;
+  border: 0;
+  border-radius: 1.5rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.safety-code-buttons .hang-up-button {
+  background: #d93025;
+  color: #fff;
+}
+
+.safety-code-verified {
+  margin: 0;
+  text-align: center;
+  font-size: 0.875rem;
+}

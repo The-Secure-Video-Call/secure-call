@@ -65,10 +65,20 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
   }, [roomSecret, localMediaStream]);
 
   const hangUp = useCallback(() => callSessionRef.current?.hangUp(), []);
+  const readSessionDescriptionSdps = useCallback(
+    () => callSessionRef.current?.readSessionDescriptionSdps() ?? null,
+    [],
+  );
 
   const callConnectionStatus: CallConnectionStatus = describeCallConnectionStatus(
     peerConnectionState,
     hasOtherPersonLeft,
   );
-  return { remoteMediaStream, callConnectionStatus, endedReason, hangUp };
+  return {
+    remoteMediaStream,
+    callConnectionStatus,
+    endedReason,
+    hangUp,
+    readSessionDescriptionSdps,
+  };
 }
