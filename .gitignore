@@ -4,3 +4,5 @@ coverage
 .env
 .env.*
 *.log
+# Read-only copy of the other repo, checked out by the Claude workflows
+.reference/
