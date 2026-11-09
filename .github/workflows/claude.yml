@@ -49,5 +49,5 @@ jobs:
           # To pay with purchased Console API credits instead, replace the line above with:
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Claude may run exactly these pnpm commands (plain `pnpm install` only, so it
-          # can't add packages from the command line), with up to 60 turns per job.
-          claude_args: '--max-turns 60 --allowedTools "Bash(pnpm install),Bash(pnpm lint),Bash(pnpm format),Bash(pnpm typecheck),Bash(pnpm test:*),Bash(pnpm build)"'
+          # can't add packages from the command line), with up to 150 turns (steps) per job.
+          claude_args: '--max-turns 150 --allowedTools "Bash(pnpm install),Bash(pnpm lint),Bash(pnpm format),Bash(pnpm typecheck),Bash(pnpm test:*),Bash(pnpm build)"'
