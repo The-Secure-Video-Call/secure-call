@@ -1,11 +1,13 @@
 import { startPerfectNegotiation, type NegotiablePeerConnection } from '@/rtc/perfectNegotiation';
+import { fromBase64Url, toBase64Url } from '@/crypto/base64url';
+import { createSessionId, decideSenderRoles, SESSION_ID_BYTES } from '@/crypto/signalEncryption';
 import {
-  createSequenceNumberTracker,
-  decodeSignalPayload,
-  encodeSignalPayload,
+  decryptSignalPayload,
+  encryptSignalPayload,
+  type SignalAadContext,
 } from '@/rtc/signalPayloadCodec';
 import { connectToSignalingServer, type SignalingClient } from '@/signaling/signalingClient';
-import type { SignalPayloadWithoutSequenceNumber } from '@protocol/index';
+import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
 
 /**
  * Public STUN only for now; TURN comes in M3.
@@ -31,7 +33,29 @@ export type CallPeerConnection = NegotiablePeerConnection &
   >;
 
 export type CallSessionEndedReason =
-  'hung-up' | 'room-full' | 'signaling-connection-lost' | 'invalid-signaling-message';
+  | 'hung-up'
+  | 'room-full'
+  | 'signaling-connection-lost'
+  | 'invalid-signaling-message'
+  /** A signaling message failed decryption or the checks on it: someone may be interfering. */
+  | 'message-verification-failed'
+  /** Our own hello, offer or answer could not be sent (for example, too large). */
+  | 'message-not-sent';
+
+/** Everything that belongs to one peer connection, including its encrypted-signaling state. */
+type PeerConnectionState = {
+  peerConnection: CallPeerConnection;
+  negotiation: ReturnType<typeof startPerfectNegotiation>;
+  /** New random ID for this connection only, so recorded messages of earlier ones fail. */
+  localSessionId: Uint8Array;
+  /** Null until the other side's hello has arrived. */
+  peerSessionId: Uint8Array | null;
+  nextOutgoingSequenceNumber: number;
+  nextIncomingSequenceNumber: number;
+  /** Messages are encrypted, sent, decrypted and handled strictly one after the other. */
+  outgoingWork: Promise<void>;
+  incomingWork: Promise<void>;
+};
 
 export type CallSessionEvents = {
   /**
@@ -79,32 +103,147 @@ let lastPeerConnectionNumber = 0;
  */
 export function startCallSession(sessionOptions: {
   roomId: string;
+  /** Encrypts and authenticates every signaling message (`deriveSignalKey`). */
+  signalKey: CryptoKey;
   signalingUrl: string;
   localMediaStream: MediaStream;
   events: CallSessionEvents;
   createPeerConnection?: () => CallPeerConnection;
   connectToSignaling?: typeof connectToSignalingServer;
 }): CallSession {
-  const { roomId, signalingUrl, localMediaStream, events } = sessionOptions;
+  const { roomId, signalKey, signalingUrl, localMediaStream, events } = sessionOptions;
   const createPeerConnection =
     sessionOptions.createPeerConnection ??
     (() => new RTCPeerConnection({ iceServers: PUBLIC_STUN_ICE_SERVERS }));
   const connectToSignaling = sessionOptions.connectToSignaling ?? connectToSignalingServer;
-  const sequenceNumberTracker = createSequenceNumberTracker();
   let signalingClient: SignalingClient | null = null;
   let hasEnded = false;
-  let current: {
-    peerConnection: CallPeerConnection;
-    negotiation: ReturnType<typeof startPerfectNegotiation>;
-  } | null = null;
+  let current: PeerConnectionState | null = null;
 
-  function sendPayload(payloadWithoutSequenceNumber: SignalPayloadWithoutSequenceNumber): void {
-    try {
-      const signalPayload = sequenceNumberTracker.addSequenceNumber(payloadWithoutSequenceNumber);
-      signalingClient?.sendSignal(encodeSignalPayload(signalPayload));
-    } catch (sendError) {
-      events.onSessionProblem(sendError);
+  /** AAD fields for messages WE send to the peer; null for a hello. */
+  function buildOutgoingAadContext(
+    connection: PeerConnectionState,
+    isHello: boolean,
+  ): SignalAadContext {
+    if (isHello) return null;
+    if (connection.peerSessionId === null) throw new Error('The other side has not said hello');
+    const senderRoles = decideSenderRoles(connection.localSessionId, connection.peerSessionId);
+    if (senderRoles === null) throw new Error('Both sides have the same session ID');
+    return {
+      senderRole: senderRoles.ownRole,
+      senderSessionId: connection.localSessionId,
+      receiverSessionId: connection.peerSessionId,
+    };
+  }
+
+  /**
+   * Encrypts and sends one payload after the ones queued before it. The sequence number is taken
+   * only once the message is really sent, so a message that cannot be sent (too large) leaves no
+   * gap that the other side would take for tampering.
+   */
+  function sendPayload(
+    connection: PeerConnectionState,
+    payloadWithoutSequenceNumber: SignalPayloadWithoutSequenceNumber,
+  ): void {
+    connection.outgoingWork = connection.outgoingWork.then(async () => {
+      if (current !== connection || hasEnded) return;
+      try {
+        const signalPayload = {
+          ...payloadWithoutSequenceNumber,
+          seq: connection.nextOutgoingSequenceNumber,
+        } as SignalPayload;
+        const encryptedSignal = await encryptSignalPayload({
+          signalKey,
+          signalPayload,
+          aadContext: buildOutgoingAadContext(connection, signalPayload.kind === 'hello'),
+        });
+        if (current !== connection || hasEnded) return;
+        signalingClient?.sendSignal(encryptedSignal.payload, encryptedSignal.iv);
+        connection.nextOutgoingSequenceNumber += 1;
+      } catch (sendError) {
+        events.onSessionProblem(sendError);
+        // Without its hello, offer or answer the call can never connect: say so, don't hang.
+        // A lost candidate is survivable (others may still work), so only report it.
+        if (payloadWithoutSequenceNumber.kind !== 'candidate' && !hasEnded) {
+          endSession('message-not-sent');
+          signalingClient?.leaveAndClose();
+        }
+      }
+    });
+  }
+
+  /**
+   * Anything that fails decryption or the checks ends the call at once, never silently: the peer
+   * connection and the socket are closed and the page shows the warning.
+   */
+  function failVerification(): void {
+    if (hasEnded) return;
+    endSession('message-verification-failed');
+    signalingClient?.leaveAndClose();
+  }
+
+  /** Handles the one message that must come first: the peer's hello. Returns false to fail. */
+  function acceptHello(connection: PeerConnectionState, signalPayload: SignalPayload): boolean {
+    if (signalPayload.kind !== 'hello') return false;
+    const peerSessionId = fromBase64Url(signalPayload.data.sessionId);
+    if (
+      peerSessionId === null ||
+      peerSessionId.length !== SESSION_ID_BYTES ||
+      toBase64Url(peerSessionId) !== signalPayload.data.sessionId ||
+      decideSenderRoles(connection.localSessionId, peerSessionId) === null
+    ) {
+      return false; // malformed, or equal to ours (our own hello reflected back)
     }
+    connection.peerSessionId = peerSessionId;
+    // Only now, with both IDs known, may anything else be sent: adding tracks starts negotiation.
+    for (const localTrack of localMediaStream.getTracks()) {
+      connection.peerConnection.addTrack(localTrack, localMediaStream);
+    }
+    return true;
+  }
+
+  function receiveSignal(
+    connection: PeerConnectionState,
+    payload: string,
+    initializationVector: string | null,
+  ) {
+    connection.incomingWork = connection.incomingWork.then(async () => {
+      if (current !== connection || hasEnded) return;
+      const expectedSequenceNumber = connection.nextIncomingSequenceNumber;
+      const peerSessionId = connection.peerSessionId;
+      let aadContext: SignalAadContext = null;
+      if (peerSessionId !== null) {
+        const senderRoles = decideSenderRoles(connection.localSessionId, peerSessionId);
+        if (senderRoles === null) return failVerification();
+        aadContext = {
+          senderRole: senderRoles.otherRole,
+          senderSessionId: peerSessionId,
+          receiverSessionId: connection.localSessionId,
+        };
+      }
+      const signalPayload = await decryptSignalPayload({
+        signalKey,
+        payload,
+        iv: initializationVector,
+        expectedSequenceNumber,
+        aadContext,
+      });
+      // The peer may have changed while we were decrypting: that message belongs to the old one.
+      if (current !== connection || hasEnded) return;
+      if (signalPayload === null) return failVerification();
+      if (peerSessionId === null) {
+        if (!acceptHello(connection, signalPayload)) return failVerification();
+      } else if (signalPayload.kind === 'hello') {
+        return failVerification();
+      } else if (signalPayload.kind === 'bye') {
+        closePeerConnection();
+      } else {
+        void connection.negotiation.handleRemotePayload(signalPayload);
+      }
+      connection.nextIncomingSequenceNumber = expectedSequenceNumber + 1;
+    });
+    // If handling a message throws, the queue must not stall silently: end the call.
+    connection.incomingWork = connection.incomingWork.catch(() => failVerification());
   }
 
   function closePeerConnection(): void {
@@ -121,15 +260,25 @@ export function startCallSession(sessionOptions: {
 
   function openPeerConnection(isPolite: boolean): void {
     closePeerConnection();
-    sequenceNumberTracker.reset();
     const peerConnection = createPeerConnection();
     const negotiation = startPerfectNegotiation({
       peerConnection,
       isPolite,
-      sendPayload,
+      sendPayload: (payloadWithoutSequenceNumber) =>
+        sendPayload(connection, payloadWithoutSequenceNumber),
       onNegotiationError: events.onSessionProblem,
     });
-    current = { peerConnection, negotiation };
+    const connection: PeerConnectionState = {
+      peerConnection,
+      negotiation,
+      localSessionId: createSessionId(),
+      peerSessionId: null,
+      nextOutgoingSequenceNumber: 0,
+      nextIncomingSequenceNumber: 0,
+      outgoingWork: Promise.resolve(),
+      incomingWork: Promise.resolve(),
+    };
+    current = connection;
     lastPeerConnectionNumber += 1;
     events.onPeerConnectionOpened(lastPeerConnectionNumber);
     peerConnection.ontrack = (trackEvent) => {
@@ -142,10 +291,12 @@ export function startCallSession(sessionOptions: {
     peerConnection.onsignalingstatechange = () => {
       if (peerConnection.signalingState === 'stable') events.onSessionDescriptionsMayHaveChanged();
     };
-    // Adding tracks triggers `negotiationneeded`, which sends the first offer.
-    for (const localTrack of localMediaStream.getTracks()) {
-      peerConnection.addTrack(localTrack, localMediaStream);
-    }
+    // Nothing but our hello goes out until the peer's hello arrives; only then are the tracks
+    // added (`acceptHello`), which triggers `negotiationneeded` and sends the first offer.
+    sendPayload(connection, {
+      kind: 'hello',
+      data: { sessionId: toBase64Url(connection.localSessionId) },
+    });
   }
 
   function endSession(endedReason: CallSessionEndedReason): void {
@@ -170,25 +321,19 @@ export function startCallSession(sessionOptions: {
         closePeerConnection();
       },
       onSignal(payload, initializationVector) {
-        // No encryption in M1, so an iv is unexpected: drop it. Same for anything invalid.
-        if (current === null || initializationVector !== null) return;
-        const signalPayload = decodeSignalPayload(payload);
-        if (signalPayload === null || !sequenceNumberTracker.acceptIncoming(signalPayload.seq)) {
-          return;
-        }
-        if (signalPayload.kind === 'bye') {
-          closePeerConnection();
-          return;
-        }
-        void current.negotiation.handleRemotePayload(signalPayload);
+        // A signal while nobody is connected is never legitimate (the server relays in order,
+        // and `peer-left` comes after the peer's last signal): treat it like any bad message.
+        if (current === null) failVerification();
+        else receiveSignal(current, payload, initializationVector);
       },
       onServerError(errorCode) {
         if (errorCode === 'room-full') endSession('room-full');
         else {
           // rate-limited / bad-message / unsupported-type mean our messages are being dropped,
-          // so the call cannot be trusted to finish setting up: end it.
-          signalingClient?.leaveAndClose();
+          // so the call cannot be trusted to finish setting up: end it. (End first: closing the
+          // socket reports `closed-by-us`, which would otherwise win as 'hung-up'.)
           endSession('signaling-connection-lost');
+          signalingClient?.leaveAndClose();
         }
       },
       onClosed(closedReason) {
@@ -210,7 +355,8 @@ export function startCallSession(sessionOptions: {
     },
     hangUp() {
       if (hasEnded) return;
-      if (current !== null) sendPayload({ kind: 'bye', data: null });
+      // No `bye` any more: encrypting is asynchronous and the socket closes right now. The
+      // server's `leave` makes the other side see `peer-left`, which closes its connection too.
       signalingClient?.leaveAndClose();
       endSession('hung-up');
     },

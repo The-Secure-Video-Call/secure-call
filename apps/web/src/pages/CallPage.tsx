@@ -15,6 +15,9 @@ const ENDED_REASON_TEXT: Record<CallSessionEndedReason, string> = {
   'room-full': 'This call already has two people, so you cannot join.',
   'signaling-connection-lost': 'The connection to the server was lost.',
   'invalid-signaling-message': 'The server sent something unexpected, so the call was ended.',
+  'message-not-sent': 'The call could not be set up on this device. Start a new call.',
+  'message-verification-failed':
+    'The connection could not be verified. Someone may be interfering. Start a new call.',
 };
 
 /** Shows a MediaStream in a <video> element. */

@@ -11,6 +11,13 @@ const sessionDescriptionTextSchema = z.string().min(1).max(SIGNAL_PAYLOAD_TEXT_M
  * never sees this; only the two browsers do. `seq` is a counter that blocks replayed messages.
  */
 export const signalPayloadSchema = z.discriminatedUnion('kind', [
+  // First message each side sends: its random 16-byte session ID (22 base64url characters).
+  // Web-only; the server never sees it. See apps/web/src/crypto/signalEncryption.ts.
+  z.strictObject({
+    kind: z.literal('hello'),
+    data: z.strictObject({ sessionId: z.string().regex(/^[A-Za-z0-9_-]{22}$/) }),
+    seq: sequenceNumberSchema,
+  }),
   z.strictObject({
     kind: z.literal('offer'),
     data: z.strictObject({ type: z.literal('offer'), sdp: sessionDescriptionTextSchema }),

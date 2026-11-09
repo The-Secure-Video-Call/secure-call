@@ -100,7 +100,7 @@ export function startPerfectNegotiation(negotiationOptions: {
         }
       }
     }
-    // `bye` is handled by the call session, not here.
+    // `hello` and `bye` are handled by the call session, not here.
   }
 
   return {

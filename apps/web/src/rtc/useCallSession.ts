@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deriveRoomId } from '@/crypto/roomId';
+import { deriveSignalKey } from '@/crypto/signalKey';
 import {
   describeCallConnectionStatus,
   type CallConnectionStatus,
@@ -27,9 +28,11 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
     let isEffectCancelled = false;
     void (async () => {
       const roomId = await deriveRoomId(roomSecret);
+      const signalKey = await deriveSignalKey(roomSecret);
       if (isEffectCancelled) return;
       callSessionRef.current = startCallSession({
         roomId,
+        signalKey,
         signalingUrl: resolveSignalingUrl(import.meta.env.VITE_SIGNALING_URL),
         localMediaStream,
         events: {

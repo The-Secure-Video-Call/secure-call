@@ -28,14 +28,14 @@ export type SignalingClientEvents = {
   onJoined(role: 'first' | 'second'): void;
   onPeerJoined(): void;
   onPeerLeft(): void;
-  /** `payload` is the opaque base64 text; `iv` is null while payloads are unencrypted (M1). */
+  /** `payload` is the opaque base64 ciphertext; `iv` is null only if the sender left it out. */
   onSignal(payload: string, iv: string | null): void;
   onServerError(errorCode: ServerErrorCode): void;
   onClosed(closedReason: SignalingClientClosedReason): void;
 };
 
 export type SignalingClient = {
-  sendSignal(payload: string): void;
+  sendSignal(payload: string, iv: string): void;
   leaveAndClose(): void;
 };
 
@@ -119,11 +119,11 @@ export function connectToSignalingServer(connectionOptions: {
   };
 
   return {
-    sendSignal(payload) {
+    sendSignal(payload, initializationVector) {
       if (isClosed || !hasJoined || webSocket.readyState !== WEB_SOCKET_OPEN) {
         throw new Error('Cannot send a signal before joining or after closing');
       }
-      sendClientMessage({ v: 1, type: 'signal', payload, iv: null });
+      sendClientMessage({ v: 1, type: 'signal', payload, iv: initializationVector });
     },
     leaveAndClose() {
       if (isClosed) return;
