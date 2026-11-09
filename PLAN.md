@@ -215,11 +215,11 @@ sides agree on what a valid message is.
 Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to the bullets.
 
 ### M0 — Repository and tooling
-- [ ] Create `secure-call` repo in the org; add `README.md`, `LICENSE`, `SECURITY.md`, `CODEOWNERS`
-- [ ] pnpm workspace with `apps/web` and `packages/protocol`; Python backend repo `secure-call-backend` (uv, Django + Channels)
-- [ ] ESLint, Prettier, TypeScript strict mode
-- [ ] GitHub Actions: install → lint → type-check → test → build
-- [ ] Turn on Dependabot, CodeQL, secret scanning, and branch protection on `main` (PR + passing CI required)
+- [x] Create `secure-call` repo in the org; add `README.md`, `LICENSE`, `SECURITY.md`, `CODEOWNERS`
+- [x] pnpm workspace with `apps/web` and `packages/protocol`; Python backend repo `secure-call-backend` (uv, Django + Channels)
+- [x] ESLint, Prettier, TypeScript strict mode
+- [x] GitHub Actions: install → lint → type-check → test → build
+- [x] Turn on Dependabot, CodeQL, secret scanning, and branch protection on `main` (PR + passing CI required)
 
 **Demo:** green CI on an empty app.
 
