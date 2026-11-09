@@ -1,5 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import { describeCallConnectionStatus } from '@/rtc/callConnectionStatus';
+import {
+  describeCallConnectionStatus,
+  describeCallConnectionStatusText,
+  isPeerConnectionVerified,
+} from '@/rtc/callConnectionStatus';
+
+describe('isPeerConnectionVerified', () => {
+  it('is verified only for the connection the person said Yes to', () => {
+    expect(isPeerConnectionVerified(1, 1)).toBe(true);
+  });
+
+  it('starts unverified for a new connection after someone else joined with the same link', () => {
+    expect(isPeerConnectionVerified(1, 2)).toBe(false);
+  });
+
+  it('is unverified before anyone pressed Yes', () => {
+    expect(isPeerConnectionVerified(null, 1)).toBe(false);
+    expect(isPeerConnectionVerified(null, 0)).toBe(false);
+  });
+});
+
+describe('describeCallConnectionStatusText', () => {
+  it('does not call an unverified connection just "Connected"', () => {
+    expect(describeCallConnectionStatusText('connected', false)).toBe(
+      'Connected, not verified yet',
+    );
+  });
+
+  it('says verified only once someone pressed Yes', () => {
+    expect(describeCallConnectionStatusText('connected', true)).toBe('Connected and verified');
+  });
+
+  it('ignores the verified flag when not connected', () => {
+    expect(describeCallConnectionStatusText('connecting', true)).toBe('Connecting…');
+  });
+});
 
 describe('describeCallConnectionStatus', () => {
   it('waits when nobody has arrived', () => {

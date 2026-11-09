@@ -20,16 +20,33 @@ export const PUBLIC_STUN_ICE_SERVERS: RTCIceServer[] = [
 export type CallPeerConnection = NegotiablePeerConnection &
   Pick<
     RTCPeerConnection,
-    'addTrack' | 'close' | 'connectionState' | 'ontrack' | 'onconnectionstatechange'
+    | 'addTrack'
+    | 'close'
+    | 'connectionState'
+    | 'currentLocalDescription'
+    | 'currentRemoteDescription'
+    | 'ontrack'
+    | 'onsignalingstatechange'
+    | 'onconnectionstatechange'
   >;
 
 export type CallSessionEndedReason =
   'hung-up' | 'room-full' | 'signaling-connection-lost' | 'invalid-signaling-message';
 
 export type CallSessionEvents = {
+  /**
+   * A new peer connection was created (the other person arrived). The number grows with every
+   * connection, so anything decided about one connection (like "verified") can be tied to it.
+   */
+  onPeerConnectionOpened(peerConnectionNumber: number): void;
   /** The remote stream, or null when the other person left. */
   onRemoteMediaStream(remoteMediaStream: MediaStream | null): void;
   onPeerConnectionStateChange(peerConnectionState: RTCPeerConnectionState): void;
+  /**
+   * The connection is `stable` again, so its current descriptions may have changed (for example
+   * after a renegotiation). The page reads them again to keep the safety code honest.
+   */
+  onSessionDescriptionsMayHaveChanged(): void;
   /**
    * Something went wrong with one message or negotiation step; the call itself may continue.
    * The value may contain SDP/ICE details: never log or display it raw.
@@ -39,7 +56,20 @@ export type CallSessionEvents = {
   onSessionEnded(endedReason: CallSessionEndedReason): void;
 };
 
-export type CallSession = { hangUp(): void };
+export type CallSession = {
+  hangUp(): void;
+  /**
+   * The SDP of both descriptions of the current connection, for the safety code; null if there
+   * is no connection or negotiation has not set both. Never log or send the returned values.
+   */
+  readSessionDescriptionSdps(): { localSdp: string; remoteSdp: string } | null;
+};
+
+/**
+ * Counts peer connections across ALL sessions in this page, never resetting, so a number is never
+ * reused when a new session starts and a "verified" decision cannot carry over to it.
+ */
+let lastPeerConnectionNumber = 0;
 
 /**
  * Joins the room and runs one call: signaling client + one RTCPeerConnection at a time, using
@@ -84,6 +114,7 @@ export function startCallSession(sessionOptions: {
     negotiation.stop();
     peerConnection.ontrack = null;
     peerConnection.onconnectionstatechange = null;
+    peerConnection.onsignalingstatechange = null;
     peerConnection.close();
     events.onRemoteMediaStream(null);
   }
@@ -99,12 +130,17 @@ export function startCallSession(sessionOptions: {
       onNegotiationError: events.onSessionProblem,
     });
     current = { peerConnection, negotiation };
+    lastPeerConnectionNumber += 1;
+    events.onPeerConnectionOpened(lastPeerConnectionNumber);
     peerConnection.ontrack = (trackEvent) => {
       const [remoteMediaStream] = trackEvent.streams;
       if (remoteMediaStream !== undefined) events.onRemoteMediaStream(remoteMediaStream);
     };
     peerConnection.onconnectionstatechange = () => {
       events.onPeerConnectionStateChange(peerConnection.connectionState);
+    };
+    peerConnection.onsignalingstatechange = () => {
+      if (peerConnection.signalingState === 'stable') events.onSessionDescriptionsMayHaveChanged();
     };
     // Adding tracks triggers `negotiationneeded`, which sends the first offer.
     for (const localTrack of localMediaStream.getTracks()) {
@@ -164,6 +200,14 @@ export function startCallSession(sessionOptions: {
   });
 
   return {
+    readSessionDescriptionSdps() {
+      // The "current" descriptions are the ones the connection is really using; a pending offer
+      // that is not agreed yet must not feed the safety code.
+      const localDescription = current?.peerConnection.currentLocalDescription;
+      const remoteDescription = current?.peerConnection.currentRemoteDescription;
+      if (!localDescription || !remoteDescription) return null;
+      return { localSdp: localDescription.sdp, remoteSdp: remoteDescription.sdp };
+    },
     hangUp() {
       if (hasEnded) return;
       if (current !== null) sendPayload({ kind: 'bye', data: null });

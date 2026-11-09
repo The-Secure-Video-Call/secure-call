@@ -1,7 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_TITLE } from '@/appTitle';
+import { SafetyCodeCheck } from '@/components/SafetyCodeCheck';
+import type { FingerprintPair } from '@/crypto/safetyCode';
 import { useLocalMediaStream } from '@/media/useLocalMediaStream';
-import { CALL_CONNECTION_STATUS_TEXT } from '@/rtc/callConnectionStatus';
+import {
+  describeCallConnectionStatusText,
+  isPeerConnectionVerified,
+} from '@/rtc/callConnectionStatus';
 import type { CallSessionEndedReason } from '@/rtc/callSession';
 import { useCallSession } from '@/rtc/useCallSession';
 
@@ -32,10 +37,30 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     toggleCameraOff,
     stopLocalMedia,
   } = useLocalMediaStream();
-  const { remoteMediaStream, callConnectionStatus, endedReason, hangUp } = useCallSession(
-    props.roomSecret,
-    localMediaStream,
+  const {
+    remoteMediaStream,
+    callConnectionStatus,
+    peerConnectionNumber,
+    sessionDescriptionsVersion,
+    endedReason,
+    hangUp,
+    readSessionDescriptionSdps,
+  } = useCallSession(props.roomSecret, localMediaStream);
+  // Which peer connection the person pressed Yes for, and the fingerprints the code was made from.
+  // A new connection never counts as verified.
+  const [verifiedConnection, setVerifiedConnection] = useState<{
+    peerConnectionNumber: number;
+    fingerprintPair: FingerprintPair;
+  } | null>(null);
+  const isConnectionVerified = isPeerConnectionVerified(
+    verifiedConnection?.peerConnectionNumber ?? null,
+    peerConnectionNumber,
   );
+  const verifiedFingerprintPair = isConnectionVerified
+    ? (verifiedConnection?.fingerprintPair ?? null)
+    : null;
+  const [didCodesMismatch, setDidCodesMismatch] = useState(false);
+  const [wasVerificationImpossible, setWasVerificationImpossible] = useState(false);
   const localVideoRef = useAttachMediaStream(localMediaStream);
   const remoteVideoRef = useAttachMediaStream(remoteMediaStream);
 
@@ -50,12 +75,24 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     props.onReturnToLobby();
   }
 
+  /** "No": close the peer connection and the socket, and warn. */
+  const endCallBecauseCodesDiffer = useCallback(() => {
+    setDidCodesMismatch(true);
+    hangUp();
+  }, [hangUp]);
+
+  /** Fingerprints unreadable: the call cannot be verified, so it is ended (fail closed). */
+  const endCallBecauseItCannotBeVerified = useCallback(() => {
+    setWasVerificationImpossible(true);
+    hangUp();
+  }, [hangUp]);
+
   const statusText =
     endedReason !== null
       ? ENDED_REASON_TEXT[endedReason]
       : localMediaStream === null && mediaErrorMessage === null
         ? 'Starting camera and microphone…'
-        : CALL_CONNECTION_STATUS_TEXT[callConnectionStatus];
+        : describeCallConnectionStatusText(callConnectionStatus, isConnectionVerified);
 
   return (
     <main className="call-page">
@@ -64,6 +101,33 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
         {statusText}
       </p>
       {mediaErrorMessage !== null && <p role="alert">{mediaErrorMessage}</p>}
+      {didCodesMismatch && (
+        <p role="alert" className="safety-code-mismatch">
+          The codes didn&apos;t match. Someone may be listening in. The call was ended.
+        </p>
+      )}
+      {wasVerificationImpossible && (
+        <p role="alert" className="safety-code-mismatch">
+          This call could not be verified, so it was ended.
+        </p>
+      )}
+      {callConnectionStatus === 'connected' && endedReason === null && (
+        <SafetyCodeCheck
+          key={peerConnectionNumber}
+          verifiedFingerprintPair={verifiedFingerprintPair}
+          sessionDescriptionsVersion={sessionDescriptionsVersion}
+          onCodesMatch={(pressedYesFingerprintPair) =>
+            setVerifiedConnection({
+              peerConnectionNumber,
+              fingerprintPair: pressedYesFingerprintPair,
+            })
+          }
+          readSessionDescriptionSdps={readSessionDescriptionSdps}
+          onCodesDoNotMatch={endCallBecauseCodesDiffer}
+          onVerifiedPairChanged={endCallBecauseCodesDiffer}
+          onVerificationFailed={endCallBecauseItCannotBeVerified}
+        />
+      )}
       <div className="call-videos">
         <video
           ref={remoteVideoRef}

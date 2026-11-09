@@ -16,6 +16,8 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
   const [peerConnectionState, setPeerConnectionState] = useState<RTCPeerConnectionState | null>(
     null,
   );
+  const [peerConnectionNumber, setPeerConnectionNumber] = useState(0);
+  const [sessionDescriptionsVersion, setSessionDescriptionsVersion] = useState(0);
   const [hasOtherPersonLeft, setHasOtherPersonLeft] = useState(false);
   const [endedReason, setEndedReason] = useState<CallSessionEndedReason | null>(null);
   const callSessionRef = useRef<CallSession | null>(null);
@@ -31,6 +33,9 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
         signalingUrl: resolveSignalingUrl(import.meta.env.VITE_SIGNALING_URL),
         localMediaStream,
         events: {
+          onPeerConnectionOpened(newPeerConnectionNumber) {
+            if (!isEffectCancelled) setPeerConnectionNumber(newPeerConnectionNumber);
+          },
           onRemoteMediaStream(newRemoteMediaStream) {
             if (isEffectCancelled) return;
             setRemoteMediaStream(newRemoteMediaStream);
@@ -43,6 +48,9 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
             if (isEffectCancelled) return;
             setPeerConnectionState(newPeerConnectionState);
             setHasOtherPersonLeft(false);
+          },
+          onSessionDescriptionsMayHaveChanged() {
+            if (!isEffectCancelled) setSessionDescriptionsVersion((version) => version + 1);
           },
           // Problems can contain SDP/ICE details, so they are deliberately not logged.
           onSessionProblem() {},
@@ -65,10 +73,22 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
   }, [roomSecret, localMediaStream]);
 
   const hangUp = useCallback(() => callSessionRef.current?.hangUp(), []);
+  const readSessionDescriptionSdps = useCallback(
+    () => callSessionRef.current?.readSessionDescriptionSdps() ?? null,
+    [],
+  );
 
   const callConnectionStatus: CallConnectionStatus = describeCallConnectionStatus(
     peerConnectionState,
     hasOtherPersonLeft,
   );
-  return { remoteMediaStream, callConnectionStatus, endedReason, hangUp };
+  return {
+    remoteMediaStream,
+    callConnectionStatus,
+    peerConnectionNumber,
+    sessionDescriptionsVersion,
+    endedReason,
+    hangUp,
+    readSessionDescriptionSdps,
+  };
 }
