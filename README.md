@@ -24,6 +24,18 @@ pnpm lint && pnpm typecheck && pnpm test && pnpm build
 The signaling server is a separate Python (Django + Channels) project:
 [secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend).
 
+## Deploying
+
+Every merge to `main` builds the web app and uploads it to
+[securevideocall.com](https://securevideocall.com) (ServerByt hosting) over encrypted FTP
+(`.github/workflows/deploy-web.yml`). Each deploy waits for approval in the repo's
+**production** environment: open the run in the Actions tab and click **Review deployments**.
+
+- Settings: environment variables `FTP_SERVER` and `FTP_USERNAME`, environment secret
+  `FTP_PASSWORD`. The FTP account can only reach `public_html`.
+- Security headers: `apps/web/public/.htaccess`, deployed with the site.
+- A deploy can also be started by hand: Actions → **Deploy web app** → **Run workflow**.
+
 ## License
 
 Copyright (C) 2026 Usman Khan and contributors.
