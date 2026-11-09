@@ -48,6 +48,8 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # To pay with purchased Console API credits instead, replace the line above with:
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Claude may run exactly these pnpm commands (plain `pnpm install` only, so it
-          # can't add packages from the command line), with up to 150 turns (steps) per job.
-          claude_args: '--max-turns 150 --allowedTools "Bash(pnpm install),Bash(pnpm lint),Bash(pnpm format),Bash(pnpm typecheck),Bash(pnpm test:*),Bash(pnpm build)"'
+          # Claude may run only these commands, with up to 150 turns (steps) per job:
+          # - the project's checks (pnpm lint, format, typecheck, test, build, protocol:sync)
+          # - `pnpm install` without package names, so it can't add packages from the command line
+          # - read-only helpers: tail/head/wc to shorten output, git status/diff/log
+          claude_args: '--max-turns 150 --allowedTools "Bash(pnpm install),Bash(pnpm install --frozen-lockfile),Bash(pnpm lint:*),Bash(pnpm format:*),Bash(pnpm typecheck:*),Bash(pnpm test:*),Bash(pnpm build:*),Bash(pnpm protocol:sync:*),Bash(tail:*),Bash(head:*),Bash(wc:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*)"'
