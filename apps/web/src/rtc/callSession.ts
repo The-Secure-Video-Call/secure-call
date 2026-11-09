@@ -26,6 +26,7 @@ export type CallPeerConnection = NegotiablePeerConnection &
     | 'currentLocalDescription'
     | 'currentRemoteDescription'
     | 'ontrack'
+    | 'onsignalingstatechange'
     | 'onconnectionstatechange'
   >;
 
@@ -41,6 +42,11 @@ export type CallSessionEvents = {
   /** The remote stream, or null when the other person left. */
   onRemoteMediaStream(remoteMediaStream: MediaStream | null): void;
   onPeerConnectionStateChange(peerConnectionState: RTCPeerConnectionState): void;
+  /**
+   * The connection is `stable` again, so its current descriptions may have changed (for example
+   * after a renegotiation). The page reads them again to keep the safety code honest.
+   */
+  onSessionDescriptionsMayHaveChanged(): void;
   /**
    * Something went wrong with one message or negotiation step; the call itself may continue.
    * The value may contain SDP/ICE details: never log or display it raw.
@@ -108,6 +114,7 @@ export function startCallSession(sessionOptions: {
     negotiation.stop();
     peerConnection.ontrack = null;
     peerConnection.onconnectionstatechange = null;
+    peerConnection.onsignalingstatechange = null;
     peerConnection.close();
     events.onRemoteMediaStream(null);
   }
@@ -131,6 +138,9 @@ export function startCallSession(sessionOptions: {
     };
     peerConnection.onconnectionstatechange = () => {
       events.onPeerConnectionStateChange(peerConnection.connectionState);
+    };
+    peerConnection.onsignalingstatechange = () => {
+      if (peerConnection.signalingState === 'stable') events.onSessionDescriptionsMayHaveChanged();
     };
     // Adding tracks triggers `negotiationneeded`, which sends the first offer.
     for (const localTrack of localMediaStream.getTracks()) {

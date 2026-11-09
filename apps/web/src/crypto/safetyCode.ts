@@ -137,21 +137,62 @@ function normaliseFingerprint(fingerprintValue: string): string {
   return `${normalisedHashName} ${hexWithColons.toUpperCase()}`;
 }
 
-/**
- * The six indices (each 0..63) of the safety code for a call. Both sides get the same result
- * whichever fingerprint they call local: the pair is sorted before hashing.
- */
-export async function computeSafetyCodeIndices(
+/** The normalised fingerprints a safety code is made from. */
+export type FingerprintPair = { localFingerprint: string; remoteFingerprint: string };
+
+/** Reads and normalises both fingerprints. Throws SafetyCodeError if either cannot be read. */
+export function readFingerprintPair(
   localSessionDescriptionSdp: string,
   remoteSessionDescriptionSdp: string,
+): FingerprintPair {
+  return {
+    localFingerprint: readFingerprintFromSdp(localSessionDescriptionSdp),
+    remoteFingerprint: readFingerprintFromSdp(remoteSessionDescriptionSdp),
+  };
+}
+
+/**
+ * The six indices (each 0..63) of the safety code for a pair of fingerprints. Both sides get the
+ * same result whichever fingerprint they call local: the pair is sorted before hashing.
+ */
+export async function computeSafetyCodeIndicesFromFingerprintPair(
+  fingerprintPair: FingerprintPair,
 ): Promise<number[]> {
   const sortedFingerprints = [
-    readFingerprintFromSdp(localSessionDescriptionSdp),
-    readFingerprintFromSdp(remoteSessionDescriptionSdp),
+    fingerprintPair.localFingerprint,
+    fingerprintPair.remoteFingerprint,
   ].sort();
   const hashInputBytes = new TextEncoder().encode(sortedFingerprints.join(FINGERPRINT_SEPARATOR));
   const hashBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', hashInputBytes));
   return extractSixBitIndices(hashBytes.subarray(0, SAFETY_CODE_BYTES_USED));
+}
+
+/** The same, straight from the two session descriptions. */
+export async function computeSafetyCodeIndices(
+  localSessionDescriptionSdp: string,
+  remoteSessionDescriptionSdp: string,
+): Promise<number[]> {
+  return computeSafetyCodeIndicesFromFingerprintPair(
+    readFingerprintPair(localSessionDescriptionSdp, remoteSessionDescriptionSdp),
+  );
+}
+
+/**
+ * What to do when the descriptions are read again on a connection:
+ * - before the person pressed Yes (`verifiedFingerprintPair` is null): show the code of the
+ *   current pair, so the shown code is never stale;
+ * - after Yes: the pair must be exactly the one that was verified. Any difference ends the call.
+ *   There is no re-verification: a fingerprint change inside one connection is not normal.
+ */
+export function decideSafetyCodeUpdate(
+  verifiedFingerprintPair: FingerprintPair | null,
+  currentFingerprintPair: FingerprintPair,
+): 'show-current-code' | 'keep-verified' | 'end-call' {
+  if (verifiedFingerprintPair === null) return 'show-current-code';
+  const isSamePair =
+    verifiedFingerprintPair.localFingerprint === currentFingerprintPair.localFingerprint &&
+    verifiedFingerprintPair.remoteFingerprint === currentFingerprintPair.remoteFingerprint;
+  return isSamePair ? 'keep-verified' : 'end-call';
 }
 
 /** Splits the first 36 bits of `firstBytes` (big-endian) into six 6-bit numbers. */

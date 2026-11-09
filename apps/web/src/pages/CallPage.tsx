@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_TITLE } from '@/appTitle';
 import { SafetyCodeCheck } from '@/components/SafetyCodeCheck';
+import type { FingerprintPair } from '@/crypto/safetyCode';
 import { useLocalMediaStream } from '@/media/useLocalMediaStream';
 import {
   describeCallConnectionStatusText,
@@ -40,18 +41,24 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     remoteMediaStream,
     callConnectionStatus,
     peerConnectionNumber,
+    sessionDescriptionsVersion,
     endedReason,
     hangUp,
     readSessionDescriptionSdps,
   } = useCallSession(props.roomSecret, localMediaStream);
-  // Which peer connection the person pressed Yes for; a new connection never counts as verified.
-  const [verifiedPeerConnectionNumber, setVerifiedPeerConnectionNumber] = useState<number | null>(
-    null,
-  );
+  // Which peer connection the person pressed Yes for, and the fingerprints the code was made from.
+  // A new connection never counts as verified.
+  const [verifiedConnection, setVerifiedConnection] = useState<{
+    peerConnectionNumber: number;
+    fingerprintPair: FingerprintPair;
+  } | null>(null);
   const isConnectionVerified = isPeerConnectionVerified(
-    verifiedPeerConnectionNumber,
+    verifiedConnection?.peerConnectionNumber ?? null,
     peerConnectionNumber,
   );
+  const verifiedFingerprintPair = isConnectionVerified
+    ? (verifiedConnection?.fingerprintPair ?? null)
+    : null;
   const [didCodesMismatch, setDidCodesMismatch] = useState(false);
   const [wasVerificationImpossible, setWasVerificationImpossible] = useState(false);
   const localVideoRef = useAttachMediaStream(localMediaStream);
@@ -69,10 +76,10 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
   }
 
   /** "No": close the peer connection and the socket, and warn. */
-  function endCallBecauseCodesDiffer() {
+  const endCallBecauseCodesDiffer = useCallback(() => {
     setDidCodesMismatch(true);
     hangUp();
-  }
+  }, [hangUp]);
 
   /** Fingerprints unreadable: the call cannot be verified, so it is ended (fail closed). */
   const endCallBecauseItCannotBeVerified = useCallback(() => {
@@ -107,10 +114,17 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
       {callConnectionStatus === 'connected' && endedReason === null && (
         <SafetyCodeCheck
           key={peerConnectionNumber}
-          isVerified={isConnectionVerified}
-          onCodesMatch={() => setVerifiedPeerConnectionNumber(peerConnectionNumber)}
+          verifiedFingerprintPair={verifiedFingerprintPair}
+          sessionDescriptionsVersion={sessionDescriptionsVersion}
+          onCodesMatch={(pressedYesFingerprintPair) =>
+            setVerifiedConnection({
+              peerConnectionNumber,
+              fingerprintPair: pressedYesFingerprintPair,
+            })
+          }
           readSessionDescriptionSdps={readSessionDescriptionSdps}
           onCodesDoNotMatch={endCallBecauseCodesDiffer}
+          onVerifiedPairChanged={endCallBecauseCodesDiffer}
           onVerificationFailed={endCallBecauseItCannotBeVerified}
         />
       )}

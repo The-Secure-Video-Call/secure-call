@@ -3,7 +3,10 @@ import {
   SAFETY_CODE_EMOJI,
   SafetyCodeError,
   computeSafetyCodeIndices,
+  computeSafetyCodeIndicesFromFingerprintPair,
+  decideSafetyCodeUpdate,
   readFingerprintFromSdp,
+  readFingerprintPair,
   safetyCodeIndicesToDigits,
   safetyCodeIndicesToEmoji,
 } from '@/crypto/safetyCode';
@@ -146,6 +149,42 @@ describe('computeSafetyCodeIndices', () => {
     await expect(
       computeSafetyCodeIndices(firstSdp, sdpWithFingerprintLine('a=fingerprint:sha-256 AB:CD')),
     ).rejects.toThrow(SafetyCodeError);
+  });
+});
+
+describe('decideSafetyCodeUpdate (fingerprints read again on the same connection)', () => {
+  const verifiedPair = readFingerprintPair(firstSdp, secondSdp);
+  const changedSdp = sdpWithFingerprintLine(
+    `a=fingerprint:sha-256 ${firstFingerprintHex.replace(/^00/, '01')}`,
+  );
+
+  it('before Yes, a changed fingerprint shows the new code, so the shown code is never stale', async () => {
+    const changedPair = readFingerprintPair(changedSdp, secondSdp);
+    expect(decideSafetyCodeUpdate(null, changedPair)).toBe('show-current-code');
+    expect(await computeSafetyCodeIndicesFromFingerprintPair(changedPair)).not.toEqual(
+      await computeSafetyCodeIndicesFromFingerprintPair(verifiedPair),
+    );
+  });
+
+  it('after Yes, an unchanged renegotiation keeps the call verified', () => {
+    expect(decideSafetyCodeUpdate(verifiedPair, readFingerprintPair(firstSdp, secondSdp))).toBe(
+      'keep-verified',
+    );
+  });
+
+  it('after Yes, a changed local or remote fingerprint ends the call', () => {
+    expect(decideSafetyCodeUpdate(verifiedPair, readFingerprintPair(changedSdp, secondSdp))).toBe(
+      'end-call',
+    );
+    expect(decideSafetyCodeUpdate(verifiedPair, readFingerprintPair(firstSdp, changedSdp))).toBe(
+      'end-call',
+    );
+  });
+
+  it('after Yes, swapping local and remote is also a change', () => {
+    expect(decideSafetyCodeUpdate(verifiedPair, readFingerprintPair(secondSdp, firstSdp))).toBe(
+      'end-call',
+    );
   });
 });
 

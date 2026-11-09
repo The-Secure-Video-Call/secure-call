@@ -15,6 +15,7 @@ function createMockPeerConnection() {
     onicecandidate: null,
     ontrack: null as ((trackEvent: RTCTrackEvent) => void) | null,
     onconnectionstatechange: null,
+    onsignalingstatechange: null as (() => void) | null,
     setLocalDescription: vi.fn(async () => {}),
     setRemoteDescription: vi.fn(async () => {}),
     addIceCandidate: vi.fn(async () => {}),
@@ -38,6 +39,7 @@ function startSession() {
     onPeerConnectionOpened: vi.fn(),
     onRemoteMediaStream: vi.fn(),
     onPeerConnectionStateChange: vi.fn(),
+    onSessionDescriptionsMayHaveChanged: vi.fn(),
     onSessionProblem: vi.fn(),
     onSessionEnded: vi.fn(),
   };
@@ -142,6 +144,18 @@ describe('call session', () => {
     expect(nextSession.sessionEvents.onPeerConnectionOpened).toHaveBeenCalledWith(
       secondNumber! + 1,
     );
+  });
+
+  it('tells the page to read the descriptions again whenever the connection is stable again', () => {
+    const { server, peerConnections, sessionEvents } = startSession();
+    server().onJoined('second');
+    const peerConnection = peerConnections[0]!;
+    peerConnection.signalingState = 'have-remote-offer';
+    peerConnection.onsignalingstatechange?.();
+    expect(sessionEvents.onSessionDescriptionsMayHaveChanged).not.toHaveBeenCalled();
+    peerConnection.signalingState = 'stable';
+    peerConnection.onsignalingstatechange?.();
+    expect(sessionEvents.onSessionDescriptionsMayHaveChanged).toHaveBeenCalledTimes(1);
   });
 
   it('hanging up (what "No, the codes differ" does) closes the connection and the socket', () => {
