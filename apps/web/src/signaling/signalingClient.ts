@@ -5,9 +5,13 @@ import {
   type ServerErrorCode,
 } from '@protocol/index';
 
-const CLOSE_CODE_NORMAL = 1000;
-/** RFC 6455 "policy violation": used when the server sends something we don't accept. */
-export const CLOSE_CODE_POLICY_VIOLATION = 1008;
+export const CLOSE_CODE_NORMAL = 1000;
+/**
+ * Application "policy violation": used when the server sends something we don't accept.
+ * Not 1008: browsers only let an application close with 1000 or 3000-4999 and throw
+ * InvalidAccessError for anything else.
+ */
+export const CLOSE_CODE_POLICY_VIOLATION = 4008;
 const WEB_SOCKET_OPEN = 1;
 
 /** The small part of WebSocket the client uses; tests pass a fake. */
@@ -69,12 +73,14 @@ export function connectToSignalingServer(connectionOptions: {
     webSocket.onmessage = null;
     webSocket.onclose = null;
     webSocket.onerror = null;
+    // Closing an already-closed socket does not throw; an invalid close code does, and that
+    // must surface instead of silently leaving the socket open.
     try {
       webSocket.close(closeCode);
-    } catch {
-      // Already closed.
+    } finally {
+      // The app must always learn the call is over, even if close() throws.
+      events.onClosed(closedReason);
     }
-    events.onClosed(closedReason);
   }
 
   webSocket.onopen = () => {

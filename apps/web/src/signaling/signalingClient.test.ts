@@ -1,11 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CLOSE_CODE_NORMAL,
   CLOSE_CODE_POLICY_VIOLATION,
   connectToSignalingServer,
   type SignalingWebSocket,
 } from '@/signaling/signalingClient';
 
 const ROOM_ID = 'AAAAAAAAAAAAAAAAAAAAAA';
+
+/** Like browsers: only 1000 or 3000-4999 (or no code at all) may be used to close. */
+function closeLikeABrowser(closeCode?: number): void {
+  if (closeCode === undefined) return;
+  if (closeCode !== 1000 && !(closeCode >= 3000 && closeCode <= 4999)) {
+    throw new Error(
+      `InvalidAccessError: The close code must be either 1000, or between 3000 and 4999. ${closeCode} is neither.`,
+    );
+  }
+}
 
 function createFakeWebSocket() {
   const sentTexts: string[] = [];
@@ -16,7 +27,7 @@ function createFakeWebSocket() {
     onclose: null,
     onerror: null,
     send: (textToSend) => sentTexts.push(textToSend),
-    close: vi.fn(),
+    close: vi.fn(closeLikeABrowser),
   };
   function receive(messageData: unknown): void {
     fakeWebSocket.onmessage?.({ data: messageData } as MessageEvent);
@@ -83,7 +94,8 @@ describe('connectToSignalingServer', () => {
     const { receive, events, fakeWebSocket } = connect();
     receive('{"v":1,"type":"joined","role":"first"}');
     receive(invalidMessage);
-    expect(fakeWebSocket.close).toHaveBeenCalledWith(CLOSE_CODE_POLICY_VIOLATION);
+    expect(fakeWebSocket.close).toHaveBeenCalledWith(4008);
+    expect(fakeWebSocket.close).toHaveBeenCalledTimes(1);
     expect(events.onClosed).toHaveBeenCalledWith('invalid-server-message');
     expect(events.onPeerLeft).not.toHaveBeenCalled();
     expect(events.onSignal).not.toHaveBeenCalled();
@@ -161,6 +173,33 @@ describe('connectToSignalingServer', () => {
     expect(() => fakeWebSocket.onopen?.(new Event('open'))).not.toThrow();
     expect(fakeWebSocket.close).toHaveBeenCalled();
     expect(onClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('only uses close codes that browsers allow', () => {
+    expect(CLOSE_CODE_POLICY_VIOLATION).toBe(4008);
+    for (const closeCode of [CLOSE_CODE_NORMAL, CLOSE_CODE_POLICY_VIOLATION]) {
+      expect(closeCode === 1000 || (closeCode >= 3000 && closeCode <= 4999)).toBe(true);
+    }
+  });
+
+  it('has a test double that throws for close codes browsers refuse', () => {
+    const { fakeWebSocket } = createFakeWebSocket();
+    expect(() => fakeWebSocket.close(1008)).toThrow(/1008 is neither/);
+    expect(() => fakeWebSocket.close(2999)).toThrow();
+    expect(() => fakeWebSocket.close(5000)).toThrow();
+    expect(() => fakeWebSocket.close(1000)).not.toThrow();
+    expect(() => fakeWebSocket.close(4008)).not.toThrow();
+  });
+
+  it('still reports closed exactly once if closing the socket throws', () => {
+    const { receive, events, fakeWebSocket } = connect();
+    fakeWebSocket.close = vi.fn(() => {
+      throw new Error('close failed');
+    });
+    receive('{"v":1,"type":"joined","role":"first"}');
+    expect(() => receive('garbage')).toThrow('close failed');
+    expect(events.onClosed).toHaveBeenCalledTimes(1);
+    expect(events.onClosed).toHaveBeenCalledWith('invalid-server-message');
   });
 
   it('reports a lost connection', () => {
