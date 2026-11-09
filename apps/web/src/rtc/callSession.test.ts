@@ -329,6 +329,26 @@ describe('call session', () => {
     expect(callSession.readSessionDescriptionSdps()).toBeNull();
   });
 
+  it('replaces only the video sender track, without renegotiating (camera switch)', async () => {
+    const { callSession, server, peerConnections } = await startSession();
+    server().onJoined('second');
+    const videoSender = { track: { kind: 'video' }, replaceTrack: vi.fn(async () => {}) };
+    const audioSender = { track: { kind: 'audio' }, replaceTrack: vi.fn(async () => {}) };
+    Object.assign(peerConnections[0]!, { getSenders: () => [audioSender, videoSender] });
+    const newVideoTrack = { kind: 'video' } as MediaStreamTrack;
+    await callSession.replaceLocalVideoTrack(newVideoTrack);
+    expect(videoSender.replaceTrack).toHaveBeenCalledWith(newVideoTrack);
+    expect(audioSender.replaceTrack).not.toHaveBeenCalled();
+    expect(peerConnections[0]!.setLocalDescription).not.toHaveBeenCalled();
+  });
+
+  it('replacing the video track with nobody connected does nothing', async () => {
+    const { callSession } = await startSession();
+    await expect(
+      callSession.replaceLocalVideoTrack({ kind: 'video' } as MediaStreamTrack),
+    ).resolves.toBeUndefined();
+  });
+
   it('closes the connection and clears the remote stream when the peer leaves', async () => {
     const { server, peerConnections, sessionEvents } = await startSession();
     server().onJoined('first');

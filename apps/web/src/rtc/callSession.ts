@@ -23,6 +23,7 @@ export type CallPeerConnection = NegotiablePeerConnection &
   Pick<
     RTCPeerConnection,
     | 'addTrack'
+    | 'getSenders'
     | 'close'
     | 'connectionState'
     | 'currentLocalDescription'
@@ -84,6 +85,12 @@ export type CallSessionEvents = {
 
 export type CallSession = {
   hangUp(): void;
+  /**
+   * Swaps the video track that is being sent (camera switch) with `replaceTrack`, so nothing is
+   * renegotiated and the safety code stays valid. A no-op when nobody is connected; the caller
+   * also puts the new track into the local stream so a later connection sends it.
+   */
+  replaceLocalVideoTrack(newVideoTrack: MediaStreamTrack): Promise<void>;
   /**
    * The SDP of both descriptions of the current connection, for the safety code; null if there
    * is no connection or negotiation has not set both. Never log or send the returned values.
@@ -359,6 +366,12 @@ export function startCallSession(sessionOptions: {
       const remoteDescription = current?.peerConnection.currentRemoteDescription;
       if (!localDescription || !remoteDescription) return null;
       return { localSdp: localDescription.sdp, remoteSdp: remoteDescription.sdp };
+    },
+    async replaceLocalVideoTrack(newVideoTrack) {
+      const videoSenders = (current?.peerConnection.getSenders() ?? []).filter(
+        (rtpSender) => rtpSender.track?.kind === 'video',
+      );
+      await Promise.all(videoSenders.map((videoSender) => videoSender.replaceTrack(newVideoTrack)));
     },
     hangUp() {
       if (hasEnded) return;

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_TITLE } from '@/appTitle';
 import { SafetyCodeCheck } from '@/components/SafetyCodeCheck';
 import type { FingerprintPair } from '@/crypto/safetyCode';
+import { tryPlayMediaElement } from '@/media/remoteAudioPlayback';
+import { useCameraSwitching } from '@/media/useCameraSwitching';
 import { useLocalMediaStream } from '@/media/useLocalMediaStream';
 import {
   describeCallConnectionStatusText,
@@ -48,8 +50,12 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     sessionDescriptionsVersion,
     endedReason,
     hangUp,
+    replaceLocalVideoTrack,
     readSessionDescriptionSdps,
   } = useCallSession(props.roomSecret, localMediaStream);
+  const { canSwitchCameras, isSwitchingCamera, switchCameraErrorMessage, switchCamera } =
+    useCameraSwitching(localMediaStream, replaceLocalVideoTrack, endedReason !== null);
+  const [isTapToStartAudioShown, setIsTapToStartAudioShown] = useState(false);
   // Which peer connection the person pressed Yes for, and the fingerprints the code was made from.
   // A new connection never counts as verified.
   const [verifiedConnection, setVerifiedConnection] = useState<{
@@ -67,6 +73,28 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
   const [wasVerificationImpossible, setWasVerificationImpossible] = useState(false);
   const localVideoRef = useAttachMediaStream(localMediaStream);
   const remoteVideoRef = useAttachMediaStream(remoteMediaStream);
+
+  // Browsers (iOS Safari) may refuse to start the remote audio without a tap: show a button.
+  useEffect(() => {
+    setIsTapToStartAudioShown(false);
+    const remoteVideoElement = remoteVideoRef.current;
+    if (remoteMediaStream === null || remoteVideoElement === null) return;
+    let isEffectCancelled = false;
+    void tryPlayMediaElement(remoteVideoElement).then((playbackState) => {
+      if (!isEffectCancelled && playbackState === 'needs-tap') setIsTapToStartAudioShown(true);
+    });
+    return () => {
+      isEffectCancelled = true;
+    };
+  }, [remoteMediaStream, remoteVideoRef]);
+
+  /** Runs inside the tap, which is the user gesture the browser wants. */
+  async function startRemoteAudioFromTap() {
+    const remoteVideoElement = remoteVideoRef.current;
+    if (remoteVideoElement === null) return;
+    const playbackState = await tryPlayMediaElement(remoteVideoElement);
+    if (playbackState === 'playing') setIsTapToStartAudioShown(false);
+  }
 
   // A call that ended on its own (room full, connection lost) must not keep the camera running.
   useEffect(() => {
@@ -105,6 +133,7 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
         {statusText}
       </p>
       {mediaErrorMessage !== null && <p role="alert">{mediaErrorMessage}</p>}
+      {switchCameraErrorMessage !== null && <p role="alert">{switchCameraErrorMessage}</p>}
       {didCodesMismatch && (
         <p role="alert" className="safety-code-mismatch">
           The codes didn&apos;t match. Someone may be listening in. The call was ended.
@@ -148,6 +177,15 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
           muted
           aria-label="You"
         />
+        {isTapToStartAudioShown && endedReason === null && (
+          <button
+            type="button"
+            className="tap-to-start-audio-button"
+            onClick={() => void startRemoteAudioFromTap()}
+          >
+            Tap to start audio
+          </button>
+        )}
       </div>
       <div className="call-controls">
         <button
@@ -166,6 +204,15 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
         >
           {isCameraOff ? 'Camera on' : 'Camera off'}
         </button>
+        {canSwitchCameras && (
+          <button
+            type="button"
+            onClick={() => void switchCamera()}
+            disabled={isSwitchingCamera || endedReason !== null}
+          >
+            Switch camera
+          </button>
+        )}
         <button type="button" className="hang-up-button" onClick={hangUpAndReturnToLobby}>
           {endedReason !== null || mediaErrorMessage !== null ? 'Back to start' : 'Hang up'}
         </button>

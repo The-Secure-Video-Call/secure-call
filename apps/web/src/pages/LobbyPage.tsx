@@ -36,10 +36,11 @@ export function LobbyPage() {
   }, [callLink]);
 
   return (
-    <main>
+    <main className="lobby-page">
       <h1>{APP_TITLE}</h1>
       <video
         ref={previewVideoRef}
+        className="lobby-preview"
         autoPlay
         playsInline
         muted
@@ -79,7 +80,7 @@ export function LobbyPage() {
         New call
       </button>
       {callLink && (
-        <div>
+        <div className="lobby-call-link">
           <input
             readOnly
             value={callLink}
