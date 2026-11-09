@@ -40,6 +40,8 @@ Inside `apps/web/src/`:
 Schema in `schema/`, valid and invalid example messages in `fixtures/`, and the backend commit it
 came from in `SOURCE`. Work from this copy (Claude's GitHub runs can't download from other repos).
 Never edit it by hand: after the backend changes, run `pnpm protocol:sync` and commit the result.
+A weekly check (`.github/workflows/contract-copy-check.yml`) opens an issue when the copy falls
+behind the backend's `main`.
 
 ## Code conventions
 
