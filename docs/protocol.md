@@ -85,12 +85,13 @@ exactly as received, so `iv` must be present or the message is rejected at the s
 `error.code` is one of: `room-full`, `room-expired`, `rate-limited`, `bad-message`,
 `unsupported-type`.
 
-| Code                               | When the server sends it                                                                                                    |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `room-full`                        | A third person tries to join. The server then closes with 1000.                                                             |
-| `room-expired`                     | The room hit a time limit (section 8). The server then closes with 1000.                                                    |
-| `bad-message`                      | `join` while already in a room, or `signal` / `leave` while not in one. Connection stays open.                              |
-| `rate-limited`, `unsupported-type` | Part of the schema. The current server does not send them yet; a client must still handle them (the web app ends the call). |
+| Code               | When the server sends it                                                                                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `room-full`        | A third person tries to join. The server then closes with 1000.                                                                                                                                                    |
+| `room-expired`     | The room hit a time limit (section 8). The server then closes with 1000.                                                                                                                                           |
+| `bad-message`      | `join` while already in a room, or `signal` / `leave` while not in one. Connection stays open.                                                                                                                     |
+| `rate-limited`     | Too many open connections for one client or in total (sent right after accept), a `join` over the join limit, or any message over the per-connection message budget. The server then closes with 4029 (section 7). |
+| `unsupported-type` | Part of the schema. The current server never sends it; a client must still handle it (the web app ends the call).                                                                                                  |
 
 A message that fails schema validation is not answered with an error: the connection is closed
 (section 7).
@@ -238,13 +239,13 @@ change ends the call. A new peer connection needs a new verification.
 
 ## 7. WebSocket close codes
 
-| Code | Meaning          | Sent by server when                                                                                                                                       |
-| ---- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1000 | Normal close     | After `room-full` or `room-expired`; the client uses it when it hangs up.                                                                                 |
-| 4003 | Unsupported data | A binary frame was received.                                                                                                                              |
-| 4008 | Policy violation | A text frame is not a valid client message (bad JSON, unknown type or field, wrong type). The web client uses it when the server sends something invalid. |
-| 4009 | Message too big  | A text frame is larger than 64 KiB.                                                                                                                       |
-| 4029 | Rate limited     | Too many joins or messages. An `error` with code `rate-limited` is sent first.                                                                            |
+| Code | Meaning          | Sent by server when                                                                                                                                                                                             |
+| ---- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1000 | Normal close     | After `room-full` or `room-expired`; the client uses it when it hangs up.                                                                                                                                       |
+| 4003 | Unsupported data | A binary frame was received.                                                                                                                                                                                    |
+| 4008 | Policy violation | A text frame is not a valid client message (bad JSON, unknown type or field, wrong type), or no `join` arrived within 10 seconds of connecting. The web client uses it when the server sends something invalid. |
+| 4009 | Message too big  | A text frame is larger than 64 KiB.                                                                                                                                                                             |
+| 4029 | Rate limited     | Too many joins, messages or open connections. An `error` with code `rate-limited` is sent first.                                                                                                                |
 
 The numbers 4003, 4008, 4009 and 4029 carry the RFC 6455 meanings of 1003, 1008 and 1009 (and
 HTTP 429 for 4029) in their last digits. They are in the 4000 range because browsers only allow an application to close with 1000 or

@@ -40,13 +40,18 @@ servers can see and 3.4 for the web app trust problem); the exact wire format an
 ### 3. A compromised static host
 
 - **Defence:** a strict CSP and security headers are in place (`apps/web/public/.htaccess`) and the
-  app has no third-party scripts. SRI and reproducible builds are **not done yet** (PLAN.md 3.4,
-  later milestones). Keeping static hosting separate from signaling means
+  app has no third-party scripts. Every script and stylesheet in the built `index.html` carries an
+  SRI hash, added by a build plugin. The build is byte-reproducible (CI checks it on Linux and
+  macOS), every deploy publishes the hashes of what it uploaded as an attested `web-<commit>`
+  GitHub release, and `node scripts/verify-deployed.mjs` checks the live site against it
+  ([SECURITY.md](../SECURITY.md)). Keeping static hosting separate from signaling means
   one compromise does not give the other.
 - **Not covered:** whoever controls the static host can serve changed JavaScript that reads the
-  secret from the link, the keys or the camera. Nothing in the browser can prevent that today. The
-  safety code does not help, because the modified code could show a matching code. Reproducible
-  builds only help for people who actually check them.
+  secret from the link, the keys or the camera. Nothing in the browser can prevent that today:
+  SRI does not help when `index.html` is replaced along with the assets, and the host can serve
+  different files to different people. The safety code does not help, because the modified code
+  could show a matching code. Reproducible builds and `verify-deployed` only help for people who
+  actually check them.
 
 ### 4. A leaked link
 
@@ -104,8 +109,14 @@ This list is intentionally blunt.
 8. **A room ID can be reused after expiry** (above). Treat a link as single-use.
 9. **Rooms are in memory in one process.** A server restart ends all calls, and the room rules are
    only correct with one server process; going to several processes needs a different room store.
-10. **Rate limiting is not implemented on the server yet** (the `rate-limited` error code exists in
-    the protocol but is not sent).
+10. **Rate limits are per client address and can be sidestepped with enough addresses.** The server
+    enforces 20 joins per client per minute, 120 TURN credentials per client per hour, 20 open
+    connections per client and 500 in total, and a per-connection message budget (a burst of 100,
+    refilled at 20 per second); IPv6 is counted per /64, /56 and /48 with tiered caps. Over a join,
+    message or connection limit the server sends `rate-limited` and closes with 4029. Someone with
+    many IPv4 addresses or IPv6 prefixes multiplies their caps, and enough of them fills all 500
+    connection slots of the process; the backend README ("Rate limits") spells out what is still
+    possible.
 11. **Denial of service** in general: a room can be filled by anyone with the link, and the server
     can be flooded.
 12. **A compromised device or browser** (malware, a malicious extension) sees everything the
