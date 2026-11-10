@@ -5,6 +5,8 @@ import { main, parseChecksums, readAlwaysSetHeaders, sha256Hex } from './verify-
 
 const COMMIT = 'a'.repeat(40);
 const TAG = 'web-aaaaaaaaaaaa';
+// The script's default site; the fake answers for this exact origin only.
+const SITE_ORIGIN = 'https://securevideocall.com';
 const CSP = "default-src 'self'; script-src 'self'";
 const HTACCESS = [
   '# comment',
@@ -69,7 +71,7 @@ function fakeWorld({ site = {}, siteHeaders = {}, checksums, redirectSite = fals
   const requested = [];
   const fetchFunction = async (url, options = {}) => {
     requested.push(url);
-    if (url.startsWith('https://securevideocall.com')) {
+    if (new URL(url).origin === SITE_ORIGIN) {
       if (redirectSite && options.redirect === 'error')
         throw new TypeError('fetch failed: redirect');
       const body = siteFiles[new URL(url).pathname];
