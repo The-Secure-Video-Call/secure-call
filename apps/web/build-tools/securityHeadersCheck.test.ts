@@ -124,6 +124,16 @@ describe('checkSecurityHeaders', () => {
     expect(problems.join()).toContain('more than once');
   });
 
+  it('rejects a header split over lines with a backslash continuation', () => {
+    const cspLine = realHtaccessText
+      .split('\n')
+      .find((line) => line.startsWith('Header always set Content-Security-Policy'));
+    expect(cspLine).toBeDefined();
+    const splitCsp = (cspLine ?? '').replace("script-src 'self';", "script-src 'self'; \\\n  ");
+    const problems = checkSecurityHeaders(realHtaccessText.replace(cspLine ?? '', splitCsp));
+    expect(problems.join()).toContain('no line continuations');
+  });
+
   it('rejects a conditional, non-always, nested or later-unset header', () => {
     const referrerLine = 'Header always set Referrer-Policy "no-referrer"';
     expect(

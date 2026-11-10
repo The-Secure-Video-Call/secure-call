@@ -194,6 +194,11 @@ const CHECKED_HEADER_NAMES = [
 export function checkSecurityHeaders(htaccessText: string): string[] {
   const headerDirectives = readHeaderDirectives(htaccessText);
   const problems: string[] = [];
+  // Apache joins a line ending in a backslash with the next one. scripts/verify-deployed.mjs
+  // refuses that (it fails closed instead of guessing), so it is refused here, in the PR, too.
+  if (/\\[ \t]*\r?$/m.test(htaccessText)) {
+    problems.push('.htaccess: no line continuations (a line ending in "\\"); one header per line');
+  }
   for (const headerName of CHECKED_HEADER_NAMES) {
     const directives = headerDirectives.filter((directive) => directive.headerName === headerName);
     const setDirectives = directives.filter((directive) => directive.action === 'set');

@@ -1,22 +1,27 @@
 // Checks that the live site serves exactly a published release of this repository.
 //
 // Every deploy publishes a GitHub Release "web-<commit>" with SHA256SUMS of the files it
-// uploaded (deploy-web.yml). This script takes the newest one (or the one named with
-// --release), checks that its tag, commit and hashes belong together and that the commit is on
-// main, then fetches the live site and checks that:
+// uploaded, attested as made by deploy-web.yml on main. This script takes the newest one (or the
+// one named with --release), checks that its tag, commit and hashes belong together, that the
+// commit is on main and (with the GitHub CLI, gh) that the attestation names that workflow, main
+// and that commit, then fetches the live site and checks that:
 //   - index.html and every file under assets/ hash exactly as listed;
 //   - index.html loads nothing that is not in the release (a script added by a host fails);
 //   - every response carries the security headers apps/web/public/.htaccess sets at the
 //     release's commit (whose own hash must match SHA256SUMS; .htaccess itself is not served),
 //     index.html is never cached as immutable, and no response redirects with Refresh.
-// Anyone can run it; it needs Node 22+ and nothing else:
+// Anyone can run it; it needs Node 22+ and gh (signed in) for the attestation:
 //   node scripts/verify-deployed.mjs [--release web-<commit>] [--site https://securevideocall.com]
+//   node scripts/verify-deployed.mjs --skip-provenance   # without gh: files and headers only
 // or, against your own rebuild of a commit (see SECURITY.md):
 //   node scripts/verify-deployed.mjs --sums SHA256SUMS --commit <40-character commit>
 // It checks what this one request saw: a compromised host could serve other files to other
 // people. Exits 0 when everything matches, 1 otherwise (any fetch error included).
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const REPOSITORY = 'The-Secure-Video-Call/secure-call';
 const DEFAULT_SITE = 'https://securevideocall.com';
@@ -25,6 +30,8 @@ const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const CHECKSUM_LINE = /^(?<hash>[0-9a-f]{64}) {2}(?:\.\/)?(?<path>[A-Za-z0-9_./-]+)$/;
 const ASSET_PATH = /^assets\/[A-Za-z0-9_-]+\.[a-z0-9]+$/;
 const OPTION_NAMES = new Set(['--release', '--site', '--sums', '--commit']);
+const FLAG_NAMES = new Set(['--skip-provenance']);
+const SIGNER_WORKFLOW = `${REPOSITORY}/.github/workflows/deploy-web.yml`;
 // The headers .htaccess sets on every response today (PLAN.md 3.5). A release commit whose
 // .htaccess sets fewer is refused, so a reformatted or truncated file can never drop one from
 // the comparison without anyone noticing.
@@ -190,18 +197,28 @@ export async function verifySite({ siteUrl, hashesByPath, expectedHeaders, fetch
   return { problems, passed };
 }
 
-/** The command line as { '--release': value, ... }. Anything unknown, repeated or empty throws. */
+/**
+ * The command line as { '--release': value, '--skip-provenance': true, ... }. Anything unknown,
+ * repeated or empty throws.
+ */
 export function readOptions(commandLineArguments) {
   const options = {};
-  for (let index = 0; index < commandLineArguments.length; index += 2) {
+  for (let index = 0; index < commandLineArguments.length; index += 1) {
     const name = commandLineArguments[index];
-    const value = commandLineArguments[index + 1];
+    if (name in options) throw new Error(`${name} given twice`);
+    if (FLAG_NAMES.has(name)) {
+      options[name] = true;
+      continue;
+    }
     if (!OPTION_NAMES.has(name)) throw new Error(`unknown argument ${JSON.stringify(name)}`);
+    index += 1;
+    const value = commandLineArguments[index];
     if (value === undefined || value === '' || value.startsWith('--'))
       throw new Error(`${name} needs a value`);
-    if (name in options) throw new Error(`${name} given twice`);
     options[name] = value;
   }
+  if ('--sums' in options && '--skip-provenance' in options)
+    throw new Error('--skip-provenance is for published releases, not --sums');
   if ('--sums' in options !== '--commit' in options)
     throw new Error('--sums and --commit go together');
   if ('--sums' in options && '--release' in options)
@@ -267,36 +284,107 @@ async function findRelease(fetchFunction, requestedTag) {
   return { tag, commit, checksumsUrl };
 }
 
-/** What is deployed comes from main only: the commit must be main or one of its ancestors. */
+/**
+ * What is deployed comes from main only: the commit must be main or one of its ancestors. main
+ * is read as the branch's commit first, so a tag named "main" can never stand in for it.
+ */
 async function checkCommitIsOnMain(fetchFunction, commit) {
-  const comparison = await fetchGitHubApi(fetchFunction, `compare/${commit}...main?per_page=1`);
+  const mainReference = await fetchGitHubApi(fetchFunction, 'git/ref/heads/main');
+  const mainCommit = mainReference?.object?.sha;
+  if (
+    mainReference?.ref !== 'refs/heads/main' ||
+    mainReference.object.type !== 'commit' ||
+    !COMMIT_PATTERN.test(mainCommit ?? '')
+  )
+    throw new Error('could not read the main branch');
+  const comparison = await fetchGitHubApi(
+    fetchFunction,
+    `compare/${commit}...${mainCommit}?per_page=1`,
+  );
   const isOnMain =
     (comparison?.status === 'identical' || comparison?.status === 'ahead') &&
     comparison.merge_base_commit?.sha === commit;
   if (!isOnMain) throw new Error(`commit ${commit} is not on main`);
 }
 
+/** The `gh attestation verify` arguments that tie SHA256SUMS to deploy-web.yml, main and a commit. */
+export function attestationArguments(checksumsPath, commit) {
+  return [
+    'attestation',
+    'verify',
+    checksumsPath,
+    '--repo',
+    REPOSITORY,
+    '--signer-workflow',
+    SIGNER_WORKFLOW,
+    '--source-ref',
+    'refs/heads/main',
+    '--source-digest',
+    commit,
+    '--deny-self-hosted-runners',
+  ];
+}
+
+/** Runs gh: { isInstalled: false } when there is none, else its exit code and output. */
+function runGitHubCli(ghArguments) {
+  const result = spawnSync('gh', ghArguments, { encoding: 'utf8', timeout: 120_000 });
+  if (result.error?.code === 'ENOENT') return { isInstalled: false };
+  if (result.error) throw result.error;
+  return { isInstalled: true, exitCode: result.status, output: `${result.stdout}${result.stderr}` };
+}
+
+/**
+ * The release's SHA256SUMS must carry an attestation signed for deploy-web.yml on main at its
+ * commit: a release made any other way (another workflow, someone with write access), or a
+ * genuine SHA256SUMS of another commit attached to this release, fails.
+ */
+function checkProvenance(runGh, checksumsBytes, commit) {
+  const folder = mkdtempSync(join(tmpdir(), 'verify-deployed-'));
+  try {
+    const checksumsPath = join(folder, 'SHA256SUMS');
+    writeFileSync(checksumsPath, checksumsBytes);
+    const result = runGh(attestationArguments(checksumsPath, commit));
+    if (!result.isInstalled)
+      throw new Error(
+        'checking who made the release needs the GitHub CLI (gh), signed in. Install it, or ' +
+          'pass --skip-provenance to check only the files and headers.',
+      );
+    if (result.exitCode !== 0)
+      throw new Error(
+        `SHA256SUMS is not attested by deploy-web.yml on main for ${commit}: ` +
+          result.output.trim().slice(-300),
+      );
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}
+
 export async function main(
   commandLineArguments,
-  { fetchFunction = fetch, log = console.log } = {},
+  { fetchFunction = fetch, log = console.log, runGh = runGitHubCli } = {},
 ) {
   const say = (line) => log(printable(line));
   try {
     const options = readOptions(commandLineArguments);
     const siteUrl = options['--site'] ?? DEFAULT_SITE;
     if (new URL(siteUrl).protocol !== 'https:') throw new Error('--site must be an https:// URL');
+    const isLocalRebuild = '--sums' in options;
     let release;
-    let checksumsText;
-    if (options['--sums']) {
+    let checksumsBytes;
+    if (isLocalRebuild) {
       // Your own rebuild instead of a published release (SECURITY.md).
       release = { tag: `local file ${options['--sums']}`, commit: options['--commit'] };
-      checksumsText = readFileSync(options['--sums'], 'utf8');
+      checksumsBytes = new Uint8Array(readFileSync(options['--sums']));
     } else {
       release = await findRelease(fetchFunction, options['--release']);
-      checksumsText = await (await fetchOk(fetchFunction, release.checksumsUrl)).text();
+      checksumsBytes = new Uint8Array(
+        await (await fetchOk(fetchFunction, release.checksumsUrl)).arrayBuffer(),
+      );
     }
-    const hashesByPath = parseChecksums(checksumsText);
+    const hashesByPath = parseChecksums(new TextDecoder().decode(checksumsBytes));
     await checkCommitIsOnMain(fetchFunction, release.commit);
+    const isProvenanceChecked = !isLocalRebuild && !options['--skip-provenance'];
+    if (isProvenanceChecked) checkProvenance(runGh, checksumsBytes, release.commit);
 
     const htaccessUrl = `https://raw.githubusercontent.com/${REPOSITORY}/${release.commit}/apps/web/public/.htaccess`;
     const htaccessBytes = new Uint8Array(
@@ -318,6 +406,7 @@ export async function main(
       fetchBytes,
     });
     say(`Release ${release.tag} (commit ${release.commit}) against ${siteUrl}:`);
+    if (isProvenanceChecked) say('  OK       attested by deploy-web.yml on main for this commit');
     for (const item of passed) say(`  OK       ${item}`);
     for (const problem of problems) say(`  MISMATCH ${problem}`);
     if (problems.length > 0) {
@@ -325,10 +414,8 @@ export async function main(
       return 1;
     }
     say('The live site serves exactly this release, with its security headers.');
-    if (!options['--sums'])
-      say(
-        `To check the deploy workflow on main made this release, see SECURITY.md (gh attestation verify).`,
-      );
+    if (options['--skip-provenance'])
+      say('Who made this release was NOT checked (--skip-provenance): see SECURITY.md.');
     return 0;
   } catch (error) {
     say(`Could not verify: ${error instanceof Error ? error.message : String(error)}`);

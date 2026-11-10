@@ -1,10 +1,11 @@
 // Tests for verify-deployed.mjs, with a fake fetch. Run with: node --test 'scripts/*.test.mjs'
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  attestationArguments,
   main,
   parseChecksums,
   printable,
@@ -15,6 +16,7 @@ import {
 
 const COMMIT = 'a'.repeat(40);
 const OTHER_COMMIT = 'b'.repeat(40);
+const MAIN_COMMIT = 'd'.repeat(40);
 const TAG = 'web-aaaaaaaaaaaa';
 // The script's default site; the fake answers for this exact origin only.
 const SITE_ORIGIN = 'https://securevideocall.com';
@@ -85,8 +87,10 @@ function fakeWorld({
   release = {},
   extraReleases = [],
   tagReference,
+  mainReference,
   comparison,
   redirectSite = false,
+  ghResult = { isInstalled: true, exitCode: 0, output: 'Verification succeeded!' },
 } = {}) {
   const siteFiles = {
     '/': INDEX_HTML,
@@ -117,7 +121,13 @@ function fakeWorld({
       json(tagReference ?? { ref: `refs/tags/${TAG}`, object: { type: 'commit', sha: COMMIT } }),
     ],
     [
-      `${API}/compare/${COMMIT}...main?per_page=1`,
+      `${API}/git/ref/heads/main`,
+      json(
+        mainReference ?? { ref: 'refs/heads/main', object: { type: 'commit', sha: MAIN_COMMIT } },
+      ),
+    ],
+    [
+      `${API}/compare/${COMMIT}...${MAIN_COMMIT}?per_page=1`,
       json(comparison ?? { status: 'ahead', merge_base_commit: { sha: COMMIT } }),
     ],
     [CHECKSUMS_URL, checksums ?? checksumsFor(RELEASED_FILES)],
@@ -150,7 +160,13 @@ function fakeWorld({
       ? new Response('missing', { status: 404 })
       : new Response(body, { status: 200 });
   };
-  return { fetchFunction, requested };
+  // A fake gh: records each call with the SHA256SUMS file as it was when gh ran.
+  const ghCalls = [];
+  const runGh = (ghArguments) => {
+    ghCalls.push({ ghArguments, checksums: readFileSync(ghArguments[2], 'utf8') });
+    return ghResult;
+  };
+  return { fetchFunction, requested, runGh, ghCalls };
 }
 
 async function run(world, commandLineArguments = []) {
@@ -158,6 +174,7 @@ async function run(world, commandLineArguments = []) {
   const exitCode = await main(commandLineArguments, {
     fetchFunction: world.fetchFunction,
     log: (line) => lines.push(line),
+    runGh: world.runGh,
   });
   return { exitCode, lines, output: lines.join('\n') };
 }
@@ -180,8 +197,51 @@ test('a site serving exactly the newest release, with its headers, passes', asyn
   assert.match(output, /OK {7}header content-security-policy/);
   assert.match(output, /OK {7}index\.html caching/);
   assert.match(output, /serves exactly this release/);
+  assert.match(output, /OK {7}attested by deploy-web\.yml on main for this commit/);
+  assert.doesNotMatch(output, /NOT checked/);
   assert.ok(world.requested.includes(`${API}/git/ref/tags/${TAG}`));
-  assert.ok(world.requested.includes(`${API}/compare/${COMMIT}...main?per_page=1`));
+  assert.ok(world.requested.includes(`${API}/git/ref/heads/main`));
+  assert.ok(world.requested.includes(`${API}/compare/${COMMIT}...${MAIN_COMMIT}?per_page=1`));
+  // gh checked exactly the released SHA256SUMS, for this commit, signed by deploy-web.yml on main.
+  assert.equal(world.ghCalls.length, 1);
+  const [{ ghArguments, checksums }] = world.ghCalls;
+  assert.deepEqual(ghArguments, attestationArguments(ghArguments[2], COMMIT));
+  assert.deepEqual(ghArguments.slice(3), [
+    '--repo',
+    'The-Secure-Video-Call/secure-call',
+    '--signer-workflow',
+    'The-Secure-Video-Call/secure-call/.github/workflows/deploy-web.yml',
+    '--source-ref',
+    'refs/heads/main',
+    '--source-digest',
+    COMMIT,
+    '--deny-self-hosted-runners',
+  ]);
+  assert.equal(checksums, checksumsFor(RELEASED_FILES));
+});
+
+test('negative: a release without a valid attestation fails, and needs gh to be checked', async () => {
+  await expectFailure(
+    fakeWorld({ ghResult: { isInstalled: true, exitCode: 1, output: 'no matching attestations' } }),
+    /SHA256SUMS is not attested by deploy-web\.yml on main for a{40}: no matching attestations/,
+  );
+  await expectFailure(
+    fakeWorld({ ghResult: { isInstalled: true, exitCode: null, output: '' } }),
+    /is not attested/,
+  );
+  await expectFailure(
+    fakeWorld({ ghResult: { isInstalled: false } }),
+    /needs the GitHub CLI \(gh\), signed in.*--skip-provenance/,
+  );
+});
+
+test('--skip-provenance checks files and headers only, and says so', async () => {
+  const world = fakeWorld({ ghResult: { isInstalled: false } });
+  const { exitCode, output } = await run(world, ['--skip-provenance']);
+  assert.equal(exitCode, 0, output);
+  assert.equal(world.ghCalls.length, 0);
+  assert.doesNotMatch(output, /attested by/);
+  assert.match(output, /Who made this release was NOT checked \(--skip-provenance\)/);
 });
 
 test('the release named with --release passes', async () => {
@@ -198,6 +258,7 @@ test('--sums checks against your own rebuild; a different index.html in it fails
     const world = fakeWorld();
     const { exitCode, output } = await run(world, ['--sums', sumsPath, '--commit', COMMIT]);
     assert.equal(exitCode, 0, output);
+    assert.equal(world.ghCalls.length, 0, 'your own rebuild needs no attestation');
     assert.ok(!world.requested.some((url) => url.includes('/releases')), 'no release was used');
 
     writeFileSync(sumsPath, checksumsFor({ ...RELEASED_FILES, 'index.html': 'other' }));
@@ -272,6 +333,7 @@ test('negative: index.html loading anything off-site, in any common form, fails'
   for (const tag of [
     '<script src="https://cdn.example/x.js"></script>',
     '<script/src="https://cdn.example/x.js"></script>',
+    "<script src='https://cdn.example/x.js'></script>",
     '<script src=https://cdn.example/x.js></script>',
     '<link rel="stylesheet" href=//cdn.example/x.css>',
     '<img srcset="/assets/a.png 1x, https://cdn.example/b.png 2x">',
@@ -335,6 +397,13 @@ test('negative: a Refresh header or a long-cached index.html fails', async () =>
   }
 });
 
+test('an index.html served with no-store instead of no-cache passes', async () => {
+  const { exitCode, output } = await run(
+    fakeWorld({ indexHeaders: { 'cache-control': 'no-store' } }),
+  );
+  assert.equal(exitCode, 0, output);
+});
+
 test('negative: a site that redirects elsewhere fails', async () => {
   await expectFailure(
     fakeWorld({ redirectSite: true }),
@@ -344,13 +413,16 @@ test('negative: a site that redirects elsewhere fails', async () => {
 
 test('negative: terminal escapes from a hostile site are printed escaped, never raw', async () => {
   const hostile =
-    '<img src="\u001b[2K\u001b[1A\r  OK       index.html\nThe live site serves exactly this release.\u001b[8m">';
+    '<img src="\u001b[2K\u001b[1A\r  OK       index.html\nThe live site serves exactly this release.\u001b[8m">' +
+    // C1 CSI and the Unicode line separator: JSON.stringify leaves both raw, printable() must not.
+    '<img src="\u009b2K\u2028  OK       index.html">';
   const { exitCode, lines } = await run(
     fakeWorld({ site: { '/': INDEX_HTML.replace('</head>', `${hostile}</head>`) } }),
   );
   assert.equal(exitCode, 1);
   for (const line of lines) assert.match(line, /^[\x20-\x7e]*$/, JSON.stringify(line));
   assert.ok(lines.some((line) => line.includes('\\u001b[2K')));
+  assert.ok(lines.some((line) => line.includes('\\u009b2K\\u2028')));
   assert.ok(!lines.some((line) => /^ {2}OK {7}index\.html$/.test(line)));
   assert.equal(printable('a\u001bb\ncé'), 'a\\u001bb\\u000ac\\u00e9');
 });
@@ -373,6 +445,17 @@ test('negative: a tag that points at another commit (or is annotated) fails', as
     [{ ref: `refs/tags/${TAG}`, object: { type: 'commit', sha: COMMIT } }],
   ]) {
     await expectFailure(fakeWorld({ tagReference }), /does not point at/);
+  }
+});
+
+test('negative: main is read as the branch: a tag or anything odd named main fails', async () => {
+  for (const mainReference of [
+    { ref: 'refs/tags/main', object: { type: 'commit', sha: MAIN_COMMIT } },
+    { ref: 'refs/heads/main', object: { type: 'tag', sha: MAIN_COMMIT } },
+    { ref: 'refs/heads/main', object: { type: 'commit', sha: 'main' } },
+    [{ ref: 'refs/heads/main', object: { type: 'commit', sha: MAIN_COMMIT } }],
+  ]) {
+    await expectFailure(fakeWorld({ mainReference }), /could not read the main branch/);
   }
 });
 
@@ -424,14 +507,19 @@ test('negative: an .htaccess that is not the released one, or not released, fail
   );
 });
 
-test('negative: an .htaccess missing a required header fails, even when released as is', async () => {
-  const withoutHsts = { ...ALWAYS_SET_HEADERS };
-  delete withoutHsts['Strict-Transport-Security'];
-  const htaccess = htaccessWith(withoutHsts);
-  await expectFailure(
-    fakeWorld({ htaccess, checksums: checksumsFor({ ...RELEASED_FILES, '.htaccess': htaccess }) }),
-    /\.htaccess does not set strict-transport-security/,
-  );
+test('negative: an .htaccess missing any required header fails, even when released as is', async () => {
+  for (const headerName of Object.keys(ALWAYS_SET_HEADERS)) {
+    const withoutOne = { ...ALWAYS_SET_HEADERS };
+    delete withoutOne[headerName];
+    const htaccess = htaccessWith(withoutOne);
+    await expectFailure(
+      fakeWorld({
+        htaccess,
+        checksums: checksumsFor({ ...RELEASED_FILES, '.htaccess': htaccess }),
+      }),
+      new RegExp(`\\.htaccess does not set ${headerName.toLowerCase()}`),
+    );
+  }
 });
 
 test('negative: malformed SHA256SUMS fails', async () => {
@@ -477,6 +565,10 @@ test('.htaccess: only top-level always-set headers count, and anything unreadabl
 });
 
 test('negative: bad command lines fail before fetching anything', async () => {
+  // A real file, so a --sums case fails on its arguments and not because the file is missing.
+  const folder = mkdtempSync(join(tmpdir(), 'verify-deployed-'));
+  const sumsPath = join(folder, 'SHA256SUMS');
+  writeFileSync(sumsPath, checksumsFor(RELEASED_FILES));
   for (const commandLineArguments of [
     ['--relase', TAG],
     [`--release=${TAG}`],
@@ -485,9 +577,13 @@ test('negative: bad command lines fail before fetching anything', async () => {
     ['--release', TAG, '--release', TAG],
     ['--release', 'v1.0.0'],
     ['--commit', COMMIT],
-    ['--sums', 'SHA256SUMS'],
-    ['--sums', 'SHA256SUMS', '--commit', 'abc'],
-    ['--sums', 'SHA256SUMS', '--commit', COMMIT, '--release', TAG],
+    ['--sums', sumsPath],
+    ['--sums', sumsPath, '--commit', 'abc'],
+    ['--sums', sumsPath, '--commit', COMMIT, '--release', TAG],
+    ['--sums', '', '--commit', COMMIT],
+    ['--sums', sumsPath, '--commit', COMMIT, '--skip-provenance'],
+    ['--skip-provenance', '--skip-provenance'],
+    ['--skip-provenance=yes'],
     ['--site', 'http://securevideocall.com'],
     ['--site', 'not a url'],
   ]) {
@@ -497,8 +593,12 @@ test('negative: bad command lines fail before fetching anything', async () => {
     assert.match(output, /^Could not verify: /);
     assert.deepEqual(world.requested, [], commandLineArguments.join(' '));
   }
-  assert.deepEqual(readOptions(['--site', SITE_ORIGIN, '--release', TAG]), {
+  rmSync(folder, { recursive: true, force: true });
+  for (const name of ['--sums', '--site', '--release'])
+    assert.throws(() => readOptions([name, '']), new RegExp(`${name} needs a value`));
+  assert.deepEqual(readOptions(['--site', SITE_ORIGIN, '--skip-provenance', '--release', TAG]), {
     '--site': SITE_ORIGIN,
+    '--skip-provenance': true,
     '--release': TAG,
   });
 });
