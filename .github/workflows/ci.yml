@@ -49,3 +49,7 @@ jobs:
       - name: Tests for the CI scripts
         run: node --test 'scripts/*.test.mjs'
       - run: pnpm build
+      # The built app: SRI hashes match the files, no inline code, every security header from
+      # PLAN.md 3.5 present and not weakened (apps/web/build-tools/).
+      - name: Check the built app
+        run: pnpm --filter @secure-call/web check:build
