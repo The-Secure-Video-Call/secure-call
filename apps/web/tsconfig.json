@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vite/client"],
@@ -10,5 +11,5 @@
       "@protocol/*": ["../../packages/protocol/src/*"]
     }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "build-tools", "vite.config.ts"]
 }
