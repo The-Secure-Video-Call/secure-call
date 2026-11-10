@@ -7,9 +7,17 @@ import { RECONNECT_WINDOW_MILLISECONDS } from '@/rtc/reconnect';
 import { decryptSignalPayload, encryptSignalPayload } from '@/rtc/signalPayloadCodec';
 import type { SignalingClientEvents } from '@/signaling/signalingClient';
 
-/** Real polling (setImmediate), because fake timers must not move while crypto finishes. */
+// Long enough for Web Crypto on a busy CI runner, well inside vitest's 5 s test timeout.
+const WAIT_UNTIL_LIMIT_MILLISECONDS = 3_000;
+
+/**
+ * Real polling (setImmediate), because fake timers must not move while crypto finishes.
+ * Bounded by real time (performance.now is not faked here), not by a number of turns: Web Crypto
+ * runs on Node's thread pool, and 2000 quick turns (about 25 ms) were not enough on a loaded runner.
+ */
 async function waitUntil(condition: () => boolean) {
-  for (let i = 0; i < 2000 && !condition(); i += 1) {
+  const deadline = performance.now() + WAIT_UNTIL_LIMIT_MILLISECONDS;
+  while (!condition() && performance.now() < deadline) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   expect(condition()).toBe(true);
