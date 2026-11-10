@@ -48,9 +48,10 @@ One WebSocket per person, text frames only, each frame one JSON message.
 1. Both derive `roomId` and `signalKey` from the secret in the link (section 4).
 2. The client opens the WebSocket and sends `join`. The server answers `joined` with a `role`.
 3. If the role is `second`, the server also sends `peer-joined` to the person already waiting.
-4. Each side that learns the other is present creates a **new** peer connection with a new random
-   session ID and sends an encrypted `hello` (section 5). Nothing else is sent until the other
-   side's `hello` has arrived. Then it adds its tracks, which starts the offer/answer exchange
+4. Each side that learns the other is present creates a **new** peer connection, with a new DTLS
+   certificate made for it alone and a new random session ID, and sends an encrypted `hello` that
+   carries the session ID and a commitment to its DTLS fingerprint (section 5). Nothing else is
+   sent until the other side's `hello` has arrived. Then it adds its tracks, which starts the offer/answer exchange
    (perfect negotiation) and ICE candidates, all as encrypted `signal` messages.
 5. Either side ends by sending `leave` (or closing the socket). The server sends `peer-left` to the
    other, which closes its peer connection and waits for a new arrival. The encrypted `bye` payload
@@ -132,7 +133,7 @@ Sources: `crypto/hkdf.ts`, `crypto/roomId.ts`, `crypto/signalKey.ts`, `crypto/se
 The plaintext is UTF-8 JSON, one of (strict, no extra fields; see `packages/protocol/src/signalPayload.ts`):
 
 ```
-{"kind":"hello","data":{"sessionId":"<22 base64url chars>"},"seq":N}
+{"kind":"hello","data":{"sessionId":"<22 base64url chars>","fingerprintCommitment":"<43 base64url chars>"},"seq":N}
 {"kind":"offer","data":{"type":"offer","sdp":"..."},"seq":N}
 {"kind":"answer","data":{"type":"answer","sdp":"..."},"seq":N}
 {"kind":"candidate","data":{"candidate":"...","sdpMid":...,"sdpMLineIndex":...,"usernameFragment":...},"seq":N}
@@ -181,20 +182,51 @@ Fixed length: **62 bytes**.
   because `seq` is in the AAD and is also checked inside the plaintext. The number is taken only when
   a message was actually sent.
 - A second `hello` in a session ends the call. A signal arriving while no peer connection exists
-  ends the call.
+  ends the call, with one exception: while the certificate for our new connection is being made,
+  the other side's `hello` (and nothing more: one message) waits and is handled once the connection
+  exists.
 - Messages recorded in an earlier session fail because the receiver's session ID is new.
+
+### Fingerprint commitment
+
+So that nobody in the middle can choose his certificates after seeing the real ones (and search for
+two that give both sides the same safety code), each side commits to its DTLS fingerprint before
+any SDP is sent:
+
+- **A fresh certificate per peer connection:** ECDSA P-256 from
+  `RTCPeerConnection.generateCertificate()`, passed as the connection's only certificate, made in
+  memory, used once and never stored. Its fingerprint is read from the `a=fingerprint:` line of an
+  offer from a throwaway local peer connection with the same certificate (no ICE servers, no
+  description set, closed at once), because `RTCCertificate.getFingerprints()` is not in every
+  browser.
+- **The commitment** is SHA-256 over the UTF-8 bytes of `secure-call/fp-commit/v1`, a `\n` (0x0A)
+  and the normalised fingerprint (section 6, step 2), as unpadded base64url: 43 characters, 32
+  bytes. No nonce is needed: the fingerprint of a fresh key cannot be guessed.
+- **It is required in the `hello`.** The `hello` is accepted only if the commitment decodes to
+  exactly 32 bytes in canonical form and differs from our own (equal means our own message was
+  reflected back).
+- **Every offer and answer of the other side** must carry exactly one fingerprint (section 6, step
+  1), whose commitment equals the one in its `hello`. It is checked before the description is
+  applied; any mismatch ends the call. Renegotiations are checked the same way.
+- **The order does the rest:** no SDP leaves before the other side's `hello` is accepted, so each
+  side has fixed its certificate before it can see the other's fingerprint.
 
 ### What ends the call
 
 The call ends (peer connection and socket closed, warning shown) when a received `signal` fails any
-check above, when our own `hello`, offer or answer cannot be sent, when the server sends an invalid
+check above (including an offer or answer whose fingerprint is not the committed one), when our
+own `hello`, offer or answer cannot be sent (or the certificate for the connection cannot be made), when the server sends an invalid
 message, `room-full`, `room-expired`, `rate-limited`, `bad-message` or `unsupported-type`, when
 the socket is lost, or when the people hang up. A failed candidate send is only reported.
 
 ## 6. Safety code
 
 After the peer connection is up, both sides compute the same six symbols from the two DTLS
-fingerprints and ask each other to compare them.
+fingerprints and ask each other to compare them. Both fingerprints were committed in the `hello`s
+(section 5), so someone in the middle had to choose his certificates blind: his chance of matching
+codes is 2^-36 per attempt, and every failed attempt is a call where the codes differ. The code is
+a short authentication string by design; 36 bits is less than the 128 bits ASVS V11.4.3 asks of
+a hash, which is accepted because of the commitment.
 
 1. Read the fingerprint from the **current** local and remote descriptions (`a=fingerprint:` lines,
    session or media level). Zero fingerprints, two different ones on one side, or a malformed

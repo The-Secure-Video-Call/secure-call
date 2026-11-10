@@ -67,6 +67,7 @@ No accounts, no installs: one person creates a call, shares a link, the other op
 | **Privacy mode (optional)** | `iceTransportPolicy: "relay"` routes media through TURN so the other person never sees your IP | IP address exposure to the other participant |
 
 ### 3.2 Safety code details
+0. **Commit first** (issue #94). Every peer connection gets a fresh ECDSA P-256 certificate, and each side's encrypted `hello` carries a SHA-256 commitment to its fingerprint. Every offer and answer of the other side must carry exactly the committed fingerprint, checked before it is applied, or the call ends. Without this, someone in the middle with the link could see both real fingerprints first and search about 2^18 certificates per side for a pair whose codes match. With it, his chance is 2^-36 per attempt (details in `docs/protocol.md` section 5).
 1. Read the local DTLS fingerprint from `pc.localDescription.sdp` and the remote one from `pc.remoteDescription.sdp` (`a=fingerprint:` lines).
 2. Sort the two fingerprints so both sides get the same order, then join them.
 3. `SHA-256` the result and take the first 36 bits → 6 emoji from a fixed 64-emoji list (or the same six indices as two-digit numbers `00`–`63` for accessibility).

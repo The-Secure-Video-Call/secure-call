@@ -29,7 +29,12 @@ const SIGNALING_URL_PATTERN = /\/ws\/signal\//;
 const LOCAL_SIGNALING_ORIGIN = 'ws://localhost:8000';
 
 type CallHistory = {
+  /** Call connections: the app always gives these ICE servers. */
   peerConnections: number;
+  /** Throwaway connections that read the fingerprint of a new certificate (no ICE servers). */
+  fingerprintProbes: number;
+  /** Every call connection had exactly one certificate, and none was used twice. */
+  certificatesFreshPerConnection: boolean;
   remoteTracks: number;
   everConnected: boolean;
   remoteVideoFrames: boolean;
@@ -68,16 +73,32 @@ async function newPerson(browser: Browser, browserName: string, name: string): P
     });
     const history: CallHistory = {
       peerConnections: 0,
+      fingerprintProbes: 0,
+      certificatesFreshPerConnection: true,
       remoteTracks: 0,
       everConnected: false,
       remoteVideoFrames: false,
     };
     (window as unknown as { callHistory: CallHistory }).callHistory = history;
     const NativePeerConnection = window.RTCPeerConnection;
+    const certificatesUsed = new Set<RTCCertificate>();
     window.RTCPeerConnection = class RecordedPeerConnection extends NativePeerConnection {
       constructor(configuration?: RTCConfiguration) {
         super(configuration);
+        if (configuration?.iceServers === undefined) {
+          history.fingerprintProbes += 1;
+          return;
+        }
         history.peerConnections += 1;
+        const [certificate, ...otherCertificates] = configuration.certificates ?? [];
+        if (
+          certificate === undefined ||
+          otherCertificates.length > 0 ||
+          certificatesUsed.has(certificate)
+        ) {
+          history.certificatesFreshPerConnection = false;
+        }
+        if (certificate !== undefined) certificatesUsed.add(certificate);
         this.addEventListener('track', () => {
           history.remoteTracks += 1;
         });
@@ -279,6 +300,9 @@ test('@every-browser two people complete an encrypted call, verify it and hang u
     // The recorder saw the call happen (so its "never" in the tests below means something).
     const history = await readCallHistory(person);
     expect(history.peerConnections).toBe(1);
+    // Its certificate was made for it alone, and its fingerprint was read before the hello.
+    expect(history.fingerprintProbes).toBe(1);
+    expect(history.certificatesFreshPerConnection).toBe(true);
     expect(history.everConnected).toBe(true);
     expect(history.remoteVideoFrames).toBe(true);
   }

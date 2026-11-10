@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fromBase64, toBase64 } from '@/crypto/base64';
 import { fromBase64Url, toBase64Url } from '@/crypto/base64url';
-import { createSessionId, decideSenderRoles } from '@/crypto/signalEncryption';
+import { computeFingerprintCommitment } from '@/crypto/fingerprintCommitment';
+import {
+  buildHelloAad,
+  createSessionId,
+  decideSenderRoles,
+  encryptSignalBytes,
+} from '@/crypto/signalEncryption';
 import { deriveSignalKey } from '@/crypto/signalKey';
 import { startCallSession, type CallPeerConnection } from '@/rtc/callSession';
+import type { LocalCertificate } from '@/rtc/localCertificate';
 import { buildIceServers, PUBLIC_STUN_ICE_SERVERS } from '@/rtc/iceServers';
 import { decryptSignalPayload, encryptSignalPayload } from '@/rtc/signalPayloadCodec';
 import type { SignalingClientEvents } from '@/signaling/signalingClient';
@@ -36,14 +43,53 @@ function createMockPeerConnection() {
 
 const roomSecretBytes = new Uint8Array(32).fill(7);
 
+/** A normalised SHA-256 fingerprint with every byte set to `byteValue`. */
+function fakeFingerprint(byteValue: number): string {
+  const hexByte = byteValue.toString(16).padStart(2, '0').toUpperCase();
+  return `sha-256 ${Array.from({ length: 32 }, () => hexByte).join(':')}`;
+}
+
+/** An SDP with one DTLS fingerprint line (all the commitment check reads). */
+function sdpWithFingerprint(fingerprint: string, label = 'remote'): string {
+  return `v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=${label}\r\na=fingerprint:${fingerprint}\r\n`;
+}
+
+// Computed once, so a fake certificate is ready one microtask after it is asked for.
+const PEER_FINGERPRINT = fakeFingerprint(0xab);
+const PEER_FINGERPRINT_COMMITMENT = await computeFingerprintCommitment(PEER_FINGERPRINT);
+const OTHER_FINGERPRINT = fakeFingerprint(0xcd);
+const LOCAL_CERTIFICATES: LocalCertificate[] = await Promise.all(
+  Array.from({ length: 16 }, async (_, certificateIndex) => ({
+    certificate: { fakeCertificateNumber: certificateIndex } as unknown as RTCCertificate,
+    fingerprintCommitment: await computeFingerprintCommitment(fakeFingerprint(certificateIndex)),
+  })),
+);
+
+/** Lets a connection that is being opened (its certificate is ready) be created. */
+async function flushOpening(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function startSession(
   signalKey?: CryptoKey,
   readIsPrivacyModeOn: () => boolean = () => false,
+  prepareLocalCertificateOverride?: () => Promise<LocalCertificate>,
 ) {
   const roomSignalKey = await deriveSignalKey(roomSecretBytes);
   const peerConnections: ReturnType<typeof createMockPeerConnection>[] = [];
   const iceServersUsed: RTCIceServer[][] = [];
   const iceTransportPoliciesUsed: RTCIceTransportPolicy[] = [];
+  const certificatesUsed: RTCCertificate[] = [];
+  let preparedCertificateCount = 0;
+  const prepareLocalCertificate = vi.fn(
+    prepareLocalCertificateOverride ??
+      (async () => {
+        const localCertificate = LOCAL_CERTIFICATES[preparedCertificateCount];
+        preparedCertificateCount += 1;
+        if (localCertificate === undefined) throw new Error('out of fake certificates');
+        return localCertificate;
+      }),
+  );
   const signalingClient = {
     sendSignal: vi.fn<(payload: string, iv: string) => void>(),
     leaveAndClose: vi.fn(),
@@ -72,13 +118,15 @@ async function startSession(
     localMediaStream,
     events: sessionEvents,
     readIsPrivacyModeOn,
-    createPeerConnection: (iceServers, iceTransportPolicy) => {
+    createPeerConnection: (iceServers, iceTransportPolicy, certificate) => {
       iceTransportPoliciesUsed.push(iceTransportPolicy);
       iceServersUsed.push(iceServers);
+      certificatesUsed.push(certificate);
       const mockPeerConnection = createMockPeerConnection();
       peerConnections.push(mockPeerConnection);
       return mockPeerConnection as unknown as CallPeerConnection;
     },
+    prepareLocalCertificate,
     connectToSignaling: connectToSignaling as never,
   });
   function server(): SignalingClientEvents {
@@ -90,6 +138,8 @@ async function startSession(
     peerConnections,
     iceServersUsed,
     iceTransportPoliciesUsed,
+    certificatesUsed,
+    prepareLocalCertificate,
     signalingClient,
     sessionEvents,
     server,
@@ -102,7 +152,8 @@ type StartedSession = Awaited<ReturnType<typeof startSession>>;
 
 /**
  * Plays the other browser. It reads our hello to learn our session ID, then sends its own hello
- * and later messages exactly like the real peer would (encrypted, with the next seq).
+ * (committing to PEER_FINGERPRINT) and later messages exactly like the real peer would
+ * (encrypted, with the next seq).
  */
 function createFakePeer(startedSession: StartedSession, signalKey = startedSession.roomSignalKey) {
   const { signalingClient, server } = startedSession;
@@ -111,6 +162,8 @@ function createFakePeer(startedSession: StartedSession, signalKey = startedSessi
   let readSentCount = 0;
   let ourSessionId: Uint8Array | null = null;
   let nextOurSequenceNumber = 0;
+
+  let ourFingerprintCommitment: string | null = null;
 
   async function readOurHello(): Promise<Uint8Array> {
     await vi.waitFor(() => expect(signalingClient.sendSignal).toHaveBeenCalled());
@@ -126,6 +179,7 @@ function createFakePeer(startedSession: StartedSession, signalKey = startedSessi
     readSentCount = 1;
     nextOurSequenceNumber = 1;
     ourSessionId = fromBase64Url(hello.data.sessionId)!;
+    ourFingerprintCommitment = hello.data.fingerprintCommitment;
     return ourSessionId;
   }
 
@@ -141,12 +195,14 @@ function createFakePeer(startedSession: StartedSession, signalKey = startedSessi
   return {
     peerSessionId,
     readOurHello,
-    async sendHello() {
+    /** The commitment our hello carried, once `readOurHello` has run. */
+    readOurFingerprintCommitment: () => ourFingerprintCommitment,
+    async sendHello(fingerprintCommitment = PEER_FINGERPRINT_COMMITMENT) {
       const encrypted = await encryptSignalPayload({
         signalKey,
         signalPayload: {
           kind: 'hello',
-          data: { sessionId: toBase64Url(peerSessionId) },
+          data: { sessionId: toBase64Url(peerSessionId), fingerprintCommitment },
           seq: nextPeerSequenceNumber,
         },
         aadContext: null,
@@ -221,7 +277,11 @@ async function expectVerificationFailure(startedSession: StartedSession) {
   expect(startedSession.signalingClient.leaveAndClose).toHaveBeenCalled();
 }
 
-const OFFER_DATA = { type: 'offer', sdp: 'remote-offer-sdp' } as const;
+const OFFER_DATA = { type: 'offer', sdp: sdpWithFingerprint(PEER_FINGERPRINT, 'offer') } as const;
+const ANSWER_DATA = {
+  type: 'answer',
+  sdp: sdpWithFingerprint(PEER_FINGERPRINT, 'answer'),
+} as const;
 
 describe('call session', () => {
   it('the first peer waits for the other person before creating a connection', async () => {
@@ -229,6 +289,7 @@ describe('call session', () => {
     server().onJoined('first');
     expect(peerConnections).toHaveLength(0);
     server().onPeerJoined();
+    await flushOpening();
     expect(peerConnections).toHaveLength(1);
   });
 
@@ -236,6 +297,7 @@ describe('call session', () => {
     const startedSession = await startSession();
     const { server, peerConnections, localTrack, signalingClient } = startedSession;
     server().onJoined('second');
+    await flushOpening();
     expect(peerConnections).toHaveLength(1);
     const fakePeer = createFakePeer(startedSession);
     await fakePeer.readOurHello();
@@ -284,6 +346,7 @@ describe('call session', () => {
     const { callSession, server, peerConnections } = startedSession;
     expect(callSession.readSessionDescriptionSdps()).toBeNull();
     server().onJoined('second');
+    await flushOpening();
     const peerConnection = peerConnections[0]!;
     expect(callSession.readSessionDescriptionSdps()).toBeNull();
     peerConnection.currentLocalDescription = { type: 'answer', sdp: 'local-sdp' } as never;
@@ -298,6 +361,7 @@ describe('call session', () => {
   it('ignores pending descriptions that are not the ones in use yet', async () => {
     const { callSession, server, peerConnections } = await startSession();
     server().onJoined('second');
+    await flushOpening();
     const peerConnection = peerConnections[0]!;
     peerConnection.localDescription = { type: 'offer', sdp: 'pending-local' } as never;
     peerConnection.remoteDescription = { type: 'answer', sdp: 'pending-remote' } as never;
@@ -308,8 +372,10 @@ describe('call session', () => {
     const { server, sessionEvents } = await startSession();
     server().onJoined('first');
     server().onPeerJoined();
+    await flushOpening();
     server().onPeerLeft();
     server().onPeerJoined(); // someone else arrives with the same link
+    await flushOpening();
     const [firstNumber, secondNumber] = sessionEvents.onPeerConnectionOpened.mock.calls.map(
       (call) => call[0] as number,
     );
@@ -318,6 +384,7 @@ describe('call session', () => {
     // A brand-new session must not start counting from the beginning again.
     const nextSession = await startSession();
     nextSession.server().onJoined('second');
+    await flushOpening();
     expect(nextSession.sessionEvents.onPeerConnectionOpened).toHaveBeenCalledWith(
       secondNumber! + 1,
     );
@@ -326,6 +393,7 @@ describe('call session', () => {
   it('tells the page to read the descriptions again whenever the connection is stable again', async () => {
     const { server, peerConnections, sessionEvents } = await startSession();
     server().onJoined('second');
+    await flushOpening();
     const peerConnection = peerConnections[0]!;
     peerConnection.signalingState = 'have-remote-offer';
     peerConnection.onsignalingstatechange?.();
@@ -339,6 +407,7 @@ describe('call session', () => {
     const { callSession, server, peerConnections, signalingClient, sessionEvents } =
       await startSession();
     server().onJoined('second');
+    await flushOpening();
     callSession.hangUp();
     expect(peerConnections[0]!.close).toHaveBeenCalled();
     expect(signalingClient.leaveAndClose).toHaveBeenCalled();
@@ -349,6 +418,7 @@ describe('call session', () => {
   it('replaces only the video sender track, without renegotiating (camera switch)', async () => {
     const { callSession, server, peerConnections } = await startSession();
     server().onJoined('second');
+    await flushOpening();
     const videoSender = { track: { kind: 'video' }, replaceTrack: vi.fn(async () => {}) };
     const audioSender = { track: { kind: 'audio' }, replaceTrack: vi.fn(async () => {}) };
     Object.assign(peerConnections[0]!, { getSenders: () => [audioSender, videoSender] });
@@ -370,6 +440,7 @@ describe('call session', () => {
     const { server, peerConnections, sessionEvents } = await startSession();
     server().onJoined('first');
     server().onPeerJoined();
+    await flushOpening();
     server().onPeerLeft();
     expect(peerConnections[0]!.close).toHaveBeenCalled();
     expect(sessionEvents.onRemoteMediaStream).toHaveBeenLastCalledWith(null);
@@ -379,7 +450,9 @@ describe('call session', () => {
     const { server, peerConnections } = await startSession();
     server().onJoined('first');
     server().onPeerJoined();
+    await flushOpening();
     server().onPeerJoined();
+    await flushOpening();
     expect(peerConnections[0]!.close).toHaveBeenCalled();
     expect(peerConnections).toHaveLength(2);
   });
@@ -394,6 +467,7 @@ describe('call session', () => {
   it('forwards the remote stream from ontrack', async () => {
     const { server, peerConnections, sessionEvents } = await startSession();
     server().onJoined('second');
+    await flushOpening();
     const remoteMediaStream = {} as MediaStream;
     peerConnections[0]!.ontrack?.({ streams: [remoteMediaStream] } as never);
     expect(sessionEvents.onRemoteMediaStream).toHaveBeenCalledWith(remoteMediaStream);
@@ -522,7 +596,10 @@ describe('call session: encrypted signaling fails closed', () => {
     const startedSession = await startConnectedSession();
     await startedSession.fakePeer.send({
       kind: 'hello',
-      data: { sessionId: toBase64Url(createSessionId()) },
+      data: {
+        sessionId: toBase64Url(createSessionId()),
+        fingerprintCommitment: PEER_FINGERPRINT_COMMITMENT,
+      },
     });
     await expectVerificationFailure(startedSession);
   });
@@ -613,6 +690,7 @@ describe('call session: encrypted signaling fails closed', () => {
   it('an error while handling an incoming message ends the call instead of stalling', async () => {
     const startedSession = await startSession();
     startedSession.server().onJoined('second');
+    await flushOpening();
     startedSession.peerConnections[0]!.addTrack.mockImplementation(() => {
       throw new Error('addTrack failed');
     });
@@ -632,6 +710,7 @@ describe('call session: encrypted signaling fails closed', () => {
     it('builds the connection with the TURN server and STUN after joined with turn', async () => {
       const { server, iceServersUsed } = await startSession();
       server().onJoined('second', turnCredentials);
+      await flushOpening();
       expect(iceServersUsed).toEqual([buildIceServers(turnCredentials)]);
       expect(iceServersUsed[0]![0]).toMatchObject({
         username: turnCredentials.username,
@@ -642,6 +721,7 @@ describe('call session: encrypted signaling fails closed', () => {
     it('uses STUN only after joined without turn', async () => {
       const { server, iceServersUsed } = await startSession();
       server().onJoined('second');
+      await flushOpening();
       expect(iceServersUsed).toEqual([PUBLIC_STUN_ICE_SERVERS]);
     });
 
@@ -650,8 +730,10 @@ describe('call session: encrypted signaling fails closed', () => {
       server().onJoined('first', turnCredentials);
       expect(iceServersUsed).toHaveLength(0);
       server().onPeerJoined();
+      await flushOpening();
       server().onPeerLeft();
       server().onPeerJoined();
+      await flushOpening();
       expect(iceServersUsed).toEqual([
         buildIceServers(turnCredentials),
         buildIceServers(turnCredentials),
@@ -669,6 +751,7 @@ describe('call session: encrypted signaling fails closed', () => {
           () => true,
         );
         server().onJoined('second', turnCredentials);
+        await flushOpening();
         expect(iceTransportPoliciesUsed).toEqual(['relay']);
         expect(iceServersUsed).toHaveLength(1);
         expect(iceServersUsed[0]).toEqual([
@@ -683,6 +766,7 @@ describe('call session: encrypted signaling fails closed', () => {
       it('never sends a host or srflx candidate, only relay', async () => {
         const startedSession = await startSession(undefined, () => true);
         startedSession.server().onJoined('second', turnCredentials);
+        await flushOpening();
         const peerConnection = startedSession.peerConnections[0]!;
         const fakePeer = createFakePeer(startedSession);
         await fakePeer.readOurHello();
@@ -732,6 +816,7 @@ describe('call session: encrypted signaling fails closed', () => {
       it('off: unchanged (all candidates, STUN, candidates are sent)', async () => {
         const startedSession = await startSession(undefined, () => false);
         startedSession.server().onJoined('second', turnCredentials);
+        await flushOpening();
         expect(startedSession.iceTransportPoliciesUsed).toEqual(['all']);
         expect(startedSession.iceServersUsed).toEqual([buildIceServers(turnCredentials)]);
         const fakePeer = createFakePeer(startedSession);
@@ -753,10 +838,12 @@ describe('call session: encrypted signaling fails closed', () => {
         const startedSession = await startSession(undefined, () => isPrivacyModeOn);
         startedSession.server().onJoined('first', turnCredentials);
         startedSession.server().onPeerJoined();
+        await flushOpening();
         isPrivacyModeOn = true; // changed mid-call: this connection stays as it is
         expect(startedSession.iceTransportPoliciesUsed).toEqual(['all']);
         startedSession.server().onPeerLeft();
         startedSession.server().onPeerJoined(); // next connection honours it, using the TURN kept
+        await flushOpening();
         expect(startedSession.iceTransportPoliciesUsed).toEqual(['all', 'relay']);
         expect(startedSession.sessionEvents.onSessionEnded).not.toHaveBeenCalled();
       });
@@ -766,6 +853,7 @@ describe('call session: encrypted signaling fails closed', () => {
         const startedSession = await startSession(undefined, () => isPrivacyModeOn);
         startedSession.server().onJoined('first'); // no turn
         startedSession.server().onPeerJoined();
+        await flushOpening();
         isPrivacyModeOn = true;
         startedSession.server().onPeerLeft();
         startedSession.server().onPeerJoined();
@@ -779,6 +867,7 @@ describe('call session: encrypted signaling fails closed', () => {
     it('never puts the credential into a session problem', async () => {
       const startedSession = await startSession();
       startedSession.server().onJoined('second', turnCredentials);
+      await flushOpening();
       startedSession.peerConnections[0]!.addTrack.mockImplementation(() => {
         throw new Error('addTrack failed');
       });
@@ -805,5 +894,291 @@ describe('call session: encrypted signaling fails closed', () => {
     await fakePeer.send({ kind: 'candidate', data: { candidate: 'candidate:1' } });
     await vi.waitFor(() => expect(peerConnections[0]!.addIceCandidate).toHaveBeenCalled());
     expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+  });
+});
+
+describe('call session: the DTLS fingerprint is committed in the hello (issue #94)', () => {
+  /** A peer connection that has sent its own offer, so an answer can be applied. */
+  async function startSessionWaitingForAnswer() {
+    const startedSession = await startConnectedSession();
+    const peerConnection = startedSession.peerConnections[0]!;
+    peerConnection.setLocalDescription.mockImplementation(async () => {
+      peerConnection.localDescription = { type: 'offer', sdp: 'my-offer' } as never;
+      peerConnection.signalingState = 'have-local-offer';
+    });
+    peerConnection.onnegotiationneeded?.(new Event('negotiationneeded'));
+    expect((await startedSession.fakePeer.readNextSentPayload()).kind).toBe('offer');
+    return startedSession;
+  }
+
+  it('our hello commits to the fingerprint of the certificate made for that connection', async () => {
+    const startedSession = await startSession();
+    startedSession.server().onJoined('second');
+    const fakePeer = createFakePeer(startedSession);
+    await fakePeer.readOurHello();
+    expect(fakePeer.readOurFingerprintCommitment()).toBe(
+      LOCAL_CERTIFICATES[0]!.fingerprintCommitment,
+    );
+    expect(startedSession.certificatesUsed).toEqual([LOCAL_CERTIFICATES[0]!.certificate]);
+  });
+
+  it('every new peer connection gets a new certificate, never a reused one', async () => {
+    const { server, certificatesUsed, prepareLocalCertificate } = await startSession();
+    server().onJoined('first');
+    server().onPeerJoined();
+    await flushOpening();
+    server().onPeerLeft();
+    server().onPeerJoined(); // the other person comes back: a new connection, a new certificate
+    await flushOpening();
+    expect(prepareLocalCertificate).toHaveBeenCalledTimes(2);
+    expect(certificatesUsed).toEqual([
+      LOCAL_CERTIFICATES[0]!.certificate,
+      LOCAL_CERTIFICATES[1]!.certificate,
+    ]);
+  });
+
+  it('applies an offer or an answer that carries the committed fingerprint', async () => {
+    const offered = await startConnectedSession();
+    await offered.fakePeer.send({ kind: 'offer', data: OFFER_DATA });
+    await vi.waitFor(() =>
+      expect(offered.peerConnections[0]!.setRemoteDescription).toHaveBeenCalledWith(OFFER_DATA),
+    );
+
+    const answered = await startSessionWaitingForAnswer();
+    await answered.fakePeer.send({ kind: 'answer', data: ANSWER_DATA });
+    await vi.waitFor(() =>
+      expect(answered.peerConnections[0]!.setRemoteDescription).toHaveBeenCalledWith(ANSWER_DATA),
+    );
+    expect(offered.sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+    expect(answered.sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+  });
+
+  it('the committed fingerprint written in lower case is the same fingerprint', async () => {
+    const { fakePeer, peerConnections, sessionEvents } = await startConnectedSession();
+    const lowerCaseOffer = {
+      type: 'offer',
+      sdp: sdpWithFingerprint(PEER_FINGERPRINT.toLowerCase()),
+    } as const;
+    await fakePeer.send({ kind: 'offer', data: lowerCaseOffer });
+    await vi.waitFor(() => expect(peerConnections[0]!.setRemoteDescription).toHaveBeenCalled());
+    expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+  });
+
+  it('an offer with another, no, several or a malformed fingerprint ends the call before it is applied', async () => {
+    for (const sdp of [
+      sdpWithFingerprint(OTHER_FINGERPRINT),
+      'v=0\r\ns=no fingerprint\r\n',
+      `${sdpWithFingerprint(PEER_FINGERPRINT)}a=fingerprint:${OTHER_FINGERPRINT}\r\n`,
+      sdpWithFingerprint('sha-256 AB:CD'),
+      sdpWithFingerprint(PEER_FINGERPRINT.replace('sha-256', 'sha-1')),
+    ]) {
+      const startedSession = await startConnectedSession();
+      await startedSession.fakePeer.send({ kind: 'offer', data: { type: 'offer', sdp } });
+      await expectVerificationFailure(startedSession);
+      expect(startedSession.peerConnections[0]!.setRemoteDescription).not.toHaveBeenCalled();
+    }
+  });
+
+  it('an answer with another fingerprint ends the call before it is applied', async () => {
+    const startedSession = await startSessionWaitingForAnswer();
+    await startedSession.fakePeer.send({
+      kind: 'answer',
+      data: { type: 'answer', sdp: sdpWithFingerprint(OTHER_FINGERPRINT, 'answer') },
+    });
+    await expectVerificationFailure(startedSession);
+    expect(startedSession.peerConnections[0]!.setRemoteDescription).not.toHaveBeenCalled();
+  });
+
+  it('a renegotiation offer that changes the fingerprint ends the call', async () => {
+    const startedSession = await startConnectedSession();
+    const peerConnection = startedSession.peerConnections[0]!;
+    await startedSession.fakePeer.send({ kind: 'offer', data: OFFER_DATA });
+    await vi.waitFor(() => expect(peerConnection.setRemoteDescription).toHaveBeenCalledTimes(1));
+    await startedSession.fakePeer.send({
+      kind: 'offer',
+      data: { type: 'offer', sdp: sdpWithFingerprint(OTHER_FINGERPRINT) },
+    });
+    await expectVerificationFailure(startedSession);
+    expect(peerConnection.setRemoteDescription).toHaveBeenCalledTimes(1);
+  });
+
+  it('a hello without a commitment, or with a malformed one, ends the call', async () => {
+    const base64UrlAlphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const lastCharacter = PEER_FINGERPRINT_COMMITMENT.at(-1)!;
+    // Same 32 bytes, but the unused low bits of the last character are set: not canonical.
+    const nonCanonicalCommitment =
+      PEER_FINGERPRINT_COMMITMENT.slice(0, -1) +
+      base64UrlAlphabet[base64UrlAlphabet.indexOf(lastCharacter) + 1];
+    for (const helloData of [
+      { sessionId: toBase64Url(createSessionId()) },
+      { sessionId: toBase64Url(createSessionId()), fingerprintCommitment: 'too-short' },
+      { sessionId: toBase64Url(createSessionId()), fingerprintCommitment: nonCanonicalCommitment },
+    ]) {
+      const startedSession = await startSession();
+      startedSession.server().onJoined('second');
+      await createFakePeer(startedSession).readOurHello();
+      // Encrypted correctly with the room key, as someone with the link could: only the
+      // contents are wrong.
+      const { ciphertextBytes, ivBytes } = await encryptSignalBytes({
+        signalKey: startedSession.roomSignalKey,
+        plaintextBytes: new TextEncoder().encode(
+          JSON.stringify({ kind: 'hello', data: helloData, seq: 0 }),
+        ),
+        additionalData: buildHelloAad(0),
+      });
+      startedSession.server().onSignal(toBase64(ciphertextBytes), toBase64(ivBytes));
+      await expectVerificationFailure(startedSession);
+      expect(startedSession.peerConnections[0]!.addTrack).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a hello that commits to our own fingerprint ends the call', async () => {
+    const startedSession = await startSession();
+    startedSession.server().onJoined('second');
+    const fakePeer = createFakePeer(startedSession);
+    await fakePeer.readOurHello();
+    await fakePeer.sendHello(fakePeer.readOurFingerprintCommitment()!);
+    await expectVerificationFailure(startedSession);
+    expect(startedSession.peerConnections[0]!.addTrack).not.toHaveBeenCalled();
+  });
+
+  it('by default each RTCPeerConnection is created with its own certificate, and only that one', async () => {
+    const configurations: RTCConfiguration[] = [];
+    class StubPeerConnection {
+      constructor(configuration: RTCConfiguration) {
+        configurations.push(configuration);
+        Object.assign(this, createMockPeerConnection());
+      }
+    }
+    vi.stubGlobal('RTCPeerConnection', StubPeerConnection);
+    try {
+      const roomSignalKey = await deriveSignalKey(roomSecretBytes);
+      let signalingEvents: SignalingClientEvents | null = null;
+      let preparedCount = 0;
+      startCallSession({
+        roomId: 'AAAAAAAAAAAAAAAAAAAAAA',
+        signalKey: roomSignalKey,
+        signalingUrl: 'ws://localhost:8000/ws/signal/',
+        localMediaStream: { getTracks: () => [] } as unknown as MediaStream,
+        events: {
+          onPeerConnectionOpened: vi.fn(),
+          onRemoteMediaStream: vi.fn(),
+          onPeerConnectionStateChange: vi.fn(),
+          onSessionDescriptionsMayHaveChanged: vi.fn(),
+          onSessionProblem: vi.fn(),
+          onReconnecting: vi.fn(),
+          onReconnected: vi.fn(),
+          onSessionEnded: vi.fn(),
+        },
+        prepareLocalCertificate: async () => LOCAL_CERTIFICATES[preparedCount++]!,
+        connectToSignaling: ((connectionOptions: { events: SignalingClientEvents }) => {
+          signalingEvents = connectionOptions.events;
+          return { sendSignal: vi.fn(), leaveAndClose: vi.fn() };
+        }) as never,
+      });
+      signalingEvents!.onJoined('first');
+      signalingEvents!.onPeerJoined();
+      await flushOpening();
+      signalingEvents!.onPeerLeft();
+      signalingEvents!.onPeerJoined();
+      await flushOpening();
+      expect(configurations.map((configuration) => configuration.certificates)).toEqual([
+        [LOCAL_CERTIFICATES[0]!.certificate],
+        [LOCAL_CERTIFICATES[1]!.certificate],
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  describe('while the certificate for a new connection is being made', () => {
+    function startSessionWithHeldCertificate() {
+      let releaseCertificate: ((localCertificate: LocalCertificate) => void) | null = null;
+      let failCertificate: ((certificateError: Error) => void) | null = null;
+      const startedSession = startSession(
+        undefined,
+        undefined,
+        () =>
+          new Promise<LocalCertificate>((resolve, reject) => {
+            releaseCertificate = resolve;
+            failCertificate = reject;
+          }),
+      );
+      return {
+        startedSession,
+        release: () => releaseCertificate!(LOCAL_CERTIFICATES[0]!),
+        fail: () => failCertificate!(new Error('no certificate')),
+      };
+    }
+
+    it("the other side's hello waits for the connection and is then accepted", async () => {
+      const held = startSessionWithHeldCertificate();
+      const startedSession = await held.startedSession;
+      startedSession.server().onJoined('second');
+      await flushOpening();
+      const fakePeer = createFakePeer(startedSession);
+      await fakePeer.sendHello(); // arrives before our connection exists
+      await flushOpening();
+      expect(startedSession.peerConnections).toHaveLength(0);
+      expect(startedSession.sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+      held.release();
+      await fakePeer.readOurHello();
+      await vi.waitFor(() =>
+        expect(startedSession.peerConnections[0]!.addTrack).toHaveBeenCalled(),
+      );
+      expect(startedSession.sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+    });
+
+    it('a second signal before the connection exists ends the call', async () => {
+      const held = startSessionWithHeldCertificate();
+      const startedSession = await held.startedSession;
+      startedSession.server().onJoined('second');
+      const fakePeer = createFakePeer(startedSession);
+      await fakePeer.sendHello();
+      await fakePeer.sendHello();
+      await expectVerificationFailure(startedSession);
+      held.release();
+      await flushOpening();
+      expect(startedSession.peerConnections).toHaveLength(0);
+      expect(startedSession.signalingClient.sendSignal).not.toHaveBeenCalled();
+    });
+
+    it('the other person leaving, or hanging up, cancels the connection', async () => {
+      const left = startSessionWithHeldCertificate();
+      const leftSession = await left.startedSession;
+      leftSession.server().onJoined('first');
+      leftSession.server().onPeerJoined();
+      leftSession.server().onPeerLeft();
+      left.release();
+      await flushOpening();
+      expect(leftSession.peerConnections).toHaveLength(0);
+      expect(leftSession.signalingClient.sendSignal).not.toHaveBeenCalled();
+
+      const hungUp = startSessionWithHeldCertificate();
+      const hungUpSession = await hungUp.startedSession;
+      hungUpSession.server().onJoined('second');
+      hungUpSession.callSession.hangUp();
+      hungUp.release();
+      await flushOpening();
+      expect(hungUpSession.peerConnections).toHaveLength(0);
+      expect(hungUpSession.sessionEvents.onSessionEnded).toHaveBeenCalledWith('hung-up');
+    });
+
+    it('a certificate that cannot be made ends the call, without a connection or a hello', async () => {
+      const held = startSessionWithHeldCertificate();
+      const startedSession = await held.startedSession;
+      startedSession.server().onJoined('second');
+      await flushOpening();
+      held.fail();
+      await vi.waitFor(() =>
+        expect(startedSession.sessionEvents.onSessionEnded).toHaveBeenCalledWith(
+          'message-not-sent',
+        ),
+      );
+      expect(startedSession.sessionEvents.onSessionProblem).toHaveBeenCalled();
+      expect(startedSession.signalingClient.leaveAndClose).toHaveBeenCalled();
+      expect(startedSession.peerConnections).toHaveLength(0);
+      expect(startedSession.signalingClient.sendSignal).not.toHaveBeenCalled();
+    });
   });
 });

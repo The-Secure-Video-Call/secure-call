@@ -597,7 +597,8 @@ there is optional.
 
 ### High
 
-- **V11.4.3: the safety code can be matched by a man in the middle.** The code is the first 36
+- **V11.4.3: the safety code can be matched by a man in the middle.** _Fixed after this review by
+  the fingerprint commitment in the `hello` (issue #94; `docs/protocol.md` section 5)._ The code is the first 36
   bits of SHA-256 over the two DTLS fingerprints, and nothing binds it to anything sent earlier.
   - **Where:** `secure-call:apps/web/src/crypto/safetyCode.ts:9,158-168`.
   - **Who:** someone who has the link and controls the signaling path, such as a malicious server
