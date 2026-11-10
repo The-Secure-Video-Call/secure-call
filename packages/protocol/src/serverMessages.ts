@@ -29,7 +29,10 @@ export const joinedMessageSchema = z.strictObject({
   v: protocolVersionSchema,
   type: z.literal('joined'),
   role: z.enum(['first', 'second']),
-  /** Only present when the server has TURN configured. */
+  /**
+   * Only present when the server has TURN configured. The JSON Schema also lists `null` (a
+   * Pydantic default), but the server never sends it (`exclude_none`); we reject it on purpose.
+   */
   turn: turnCredentialsSchema.optional(),
 });
 export const peerJoinedMessageSchema = z.strictObject({
