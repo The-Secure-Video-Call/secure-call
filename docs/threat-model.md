@@ -62,6 +62,13 @@ servers can see and 3.4 for the web app trust problem); the exact wire format an
 - **Not covered:**
   - A link that ends up in chat history, a browser history sync, a screenshot, a shared screen or a
     messaging service's link preview is as good as handing over the call.
+  - The link stays in the address bar and history while a call is open (needed for a reload). When
+    the session ends for any reason (hang-up, room full, expired, failed verification, failed
+    reconnect, privacy mode needing a relay), the app replaces the history entry with the start
+    page. The other person leaving is not an end, so the link stays then. It also stays when the
+    camera or microphone is refused (no session starts; the person may allow it and reload) and
+    when the tab is closed or reloaded, until "Back to start". Entries the browser
+    saved earlier (history sync, the link you pasted elsewhere) are out of reach.
   - Someone with the link who joins first is "the other person" until the safety code is compared.
   - A room ID can be reused after expiry: the server keeps no list of old room IDs, so the same link
     works again to start a new room until it is thrown away.

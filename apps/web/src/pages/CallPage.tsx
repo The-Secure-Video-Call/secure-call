@@ -40,7 +40,12 @@ function useAttachMediaStream(mediaStream: MediaStream | null) {
 }
 
 /** The call screen: remote and local video, connection status, mute / camera / hang up. */
-export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): void }) {
+export function CallPage(props: {
+  roomSecret: Uint8Array;
+  /** The session ended, for any reason: the link must leave the address bar and the history. */
+  onSessionEnded(): void;
+  onReturnToLobby(): void;
+}) {
   const {
     localMediaStream,
     mediaErrorMessage,
@@ -111,9 +116,14 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
   }
 
   // A call that ended on its own (room full, connection lost) must not keep the camera running.
+  // The secret also leaves the address bar and history (ASVS V14.3.1). The other person leaving is
+  // not an end: the session keeps waiting in the same room, so the link stays for a reload.
+  const { onSessionEnded } = props;
   useEffect(() => {
-    if (endedReason !== null) stopLocalMedia();
-  }, [endedReason, stopLocalMedia]);
+    if (endedReason === null) return;
+    stopLocalMedia();
+    onSessionEnded();
+  }, [endedReason, stopLocalMedia, onSessionEnded]);
 
   function hangUpAndReturnToLobby() {
     hangUp();

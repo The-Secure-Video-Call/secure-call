@@ -799,6 +799,8 @@ postgres` line (it overrides `.env`), the `depends_on` and the `postgres` servic
 - **V14.3.1:** after a call ends, the secret stays in the address bar and the history until the
   person presses "Back to start".
   - **Fix:** `history.replaceState` to the start page as soon as the call ends.
+  - **Status:** fixed in #104. The session ending for any reason now does this
+    (`apps/web/src/pages/CallPage.tsx`, `apps/web/src/App.tsx`).
 - **V14.1.1, V14.1.2:** no data classification, protection levels or retention rules, and no view
   on data-protection law such as the GDPR.
   - **Fix:** turn the threat model's asset table into a data inventory with a level, where each

@@ -36,6 +36,7 @@ export function useCallSession(
   useEffect(() => {
     if (localMediaStream === null) return;
     let isEffectCancelled = false;
+    let isPageLeaving = false;
     void (async () => {
       const roomId = await deriveRoomId(roomSecret);
       const signalKey = await deriveSignalKey(roomSecret);
@@ -79,16 +80,27 @@ export function useCallSession(
           onSessionProblem() {},
           onSessionEnded(sessionEndedReason) {
             // Ignore the end of a session this effect already replaced (e.g. StrictMode re-run).
-            if (!isEffectCancelled) setEndedReason(sessionEndedReason);
+            // Not while the page is going away: ending the session there must not clear the link,
+            // or a reload (or restoring the page) would lose it.
+            if (!isEffectCancelled && !isPageLeaving) setEndedReason(sessionEndedReason);
           },
         },
       });
     })();
     // Closing the tab skips React's cleanup, so tell the other person we are leaving.
-    const hangUpWhenPageIsHidden = () => callSessionRef.current?.hangUp();
+    const hangUpWhenPageIsHidden = () => {
+      isPageLeaving = true;
+      callSessionRef.current?.hangUp();
+    };
+    const showPageAgain = (pageShowEvent: PageTransitionEvent) => {
+      // Restored from the back/forward cache: the session is gone, so start over with a reload.
+      if (pageShowEvent.persisted) window.location.reload();
+    };
+    window.addEventListener('pageshow', showPageAgain);
     window.addEventListener('pagehide', hangUpWhenPageIsHidden);
     return () => {
       window.removeEventListener('pagehide', hangUpWhenPageIsHidden);
+      window.removeEventListener('pageshow', showPageAgain);
       isEffectCancelled = true;
       callSessionRef.current?.hangUp();
       callSessionRef.current = null;
