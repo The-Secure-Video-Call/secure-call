@@ -16,6 +16,9 @@ function createMockPeerConnection() {
     currentLocalDescription: null,
     currentRemoteDescription: null,
     connectionState: 'new',
+    iceConnectionState: 'new',
+    oniceconnectionstatechange: null,
+    restartIce: vi.fn(),
     onnegotiationneeded: null as ((negotiationNeededEvent: Event) => void) | null,
     onicecandidate: null,
     ontrack: null as ((trackEvent: RTCTrackEvent) => void) | null,
@@ -49,6 +52,8 @@ async function startSession(signalKey?: CryptoKey) {
     onPeerConnectionStateChange: vi.fn(),
     onSessionDescriptionsMayHaveChanged: vi.fn(),
     onSessionProblem: vi.fn(),
+    onReconnecting: vi.fn(),
+    onReconnected: vi.fn(),
     onSessionEnded: vi.fn(),
   };
   const localTrack = { kind: 'video' } as MediaStreamTrack;

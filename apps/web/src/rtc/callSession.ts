@@ -1,4 +1,6 @@
+import { watchIceConnectionForRestart } from '@/rtc/iceRestart';
 import { startPerfectNegotiation, type NegotiablePeerConnection } from '@/rtc/perfectNegotiation';
+import { createReconnectScheduler } from '@/rtc/reconnect';
 import { fromBase64Url, toBase64Url } from '@/crypto/base64url';
 import { createSessionId, decideSenderRoles, SESSION_ID_BYTES } from '@/crypto/signalEncryption';
 import {
@@ -31,6 +33,9 @@ export type CallPeerConnection = NegotiablePeerConnection &
     | 'ontrack'
     | 'onsignalingstatechange'
     | 'onconnectionstatechange'
+    | 'iceConnectionState'
+    | 'oniceconnectionstatechange'
+    | 'restartIce'
   >;
 
 export type CallSessionEndedReason =
@@ -39,6 +44,8 @@ export type CallSessionEndedReason =
   /** The call link's time ran out on the server. */
   | 'room-expired'
   | 'signaling-connection-lost'
+  /** The signaling connection dropped mid-call and could not be restored within the window. */
+  | 'reconnect-failed'
   | 'invalid-signaling-message'
   /** A signaling message failed decryption or the checks on it: someone may be interfering. */
   | 'message-verification-failed'
@@ -49,6 +56,7 @@ export type CallSessionEndedReason =
 type PeerConnectionState = {
   peerConnection: CallPeerConnection;
   negotiation: ReturnType<typeof startPerfectNegotiation>;
+  iceRestartWatch: ReturnType<typeof watchIceConnectionForRestart>;
   /** New random ID for this connection only, so recorded messages of earlier ones fail. */
   localSessionId: Uint8Array;
   /** Null until the other side's hello has arrived. */
@@ -79,6 +87,13 @@ export type CallSessionEvents = {
    * The value may contain SDP/ICE details: never log or display it raw.
    */
   onSessionProblem(problem: unknown): void;
+  /**
+   * The signaling connection dropped. The peer connection is closed; a new join (new peer
+   * connection, new encrypted session, new safety-code check) is tried with backoff.
+   */
+  onReconnecting(): void;
+  /** We are back in the room. Whatever connects next is a NEW connection and is not verified. */
+  onReconnected(): void;
   /** The session is over and cannot be reused. */
   onSessionEnded(endedReason: CallSessionEndedReason): void;
 };
@@ -126,6 +141,9 @@ export function startCallSession(sessionOptions: {
     (() => new RTCPeerConnection({ iceServers: PUBLIC_STUN_ICE_SERVERS }));
   const connectToSignaling = sessionOptions.connectToSignaling ?? connectToSignalingServer;
   let signalingClient: SignalingClient | null = null;
+  /** Events of an earlier signaling client (a dropped or discarded one) must be ignored. */
+  let signalingGeneration = 0;
+  let hasJoinedBefore = false;
   let hasEnded = false;
   let current: PeerConnectionState | null = null;
 
@@ -257,9 +275,10 @@ export function startCallSession(sessionOptions: {
 
   function closePeerConnection(): void {
     if (current === null) return;
-    const { peerConnection, negotiation } = current;
+    const { peerConnection, negotiation, iceRestartWatch } = current;
     current = null;
     negotiation.stop();
+    iceRestartWatch.stop();
     peerConnection.ontrack = null;
     peerConnection.onconnectionstatechange = null;
     peerConnection.onsignalingstatechange = null;
@@ -280,6 +299,7 @@ export function startCallSession(sessionOptions: {
     const connection: PeerConnectionState = {
       peerConnection,
       negotiation,
+      iceRestartWatch: watchIceConnectionForRestart({ peerConnection }),
       localSessionId: createSessionId(),
       peerSessionId: null,
       nextOutgoingSequenceNumber: 0,
@@ -311,52 +331,93 @@ export function startCallSession(sessionOptions: {
   function endSession(endedReason: CallSessionEndedReason): void {
     if (hasEnded) return;
     hasEnded = true;
+    reconnectScheduler.stop();
     closePeerConnection();
     events.onSessionEnded(endedReason);
   }
 
-  signalingClient = connectToSignaling({
-    signalingUrl,
-    roomId,
-    events: {
-      onJoined(role) {
-        // `second` arrived after the other person, who is waiting for us: be polite.
-        if (role === 'second') openPeerConnection(true);
+  /** Every join, first or repeated, gets its own client; nothing is carried over from the last. */
+  function connectAndJoin(): void {
+    signalingGeneration += 1;
+    const generation = signalingGeneration;
+    const isCurrentClient = () => generation === signalingGeneration && !hasEnded;
+    signalingClient = connectToSignaling({
+      signalingUrl,
+      roomId,
+      events: {
+        onJoined(role) {
+          if (!isCurrentClient()) return;
+          hasJoinedBefore = true;
+          if (reconnectScheduler.isActive) {
+            reconnectScheduler.stop();
+            events.onReconnected();
+          }
+          // `second` arrived after the other person, who is waiting for us: be polite.
+          if (role === 'second') openPeerConnection(true);
+        },
+        onPeerJoined() {
+          if (isCurrentClient()) openPeerConnection(false);
+        },
+        onPeerLeft() {
+          if (isCurrentClient()) closePeerConnection();
+        },
+        onSignal(payload, initializationVector) {
+          if (!isCurrentClient()) return;
+          // A signal while nobody is connected is never legitimate (the server relays in order,
+          // and `peer-left` comes after the peer's last signal): treat it like any bad message.
+          if (current === null) failVerification();
+          else receiveSignal(current, payload, initializationVector);
+        },
+        onServerError(errorCode) {
+          if (!isCurrentClient()) return;
+          if (errorCode === 'room-full' && reconnectScheduler.isActive) {
+            // The server probably still holds our old connection: drop this attempt and retry
+            // until the reconnect window ends.
+            const discardedClient = signalingClient;
+            signalingGeneration += 1;
+            discardedClient?.leaveAndClose();
+            reconnectScheduler.scheduleNextAttempt();
+          } else if (errorCode === 'room-full') endSession('room-full');
+          else if (errorCode === 'room-expired') {
+            // End first (closing the socket reports `closed-by-us`, which would win as 'hung-up'),
+            // then close the peer connection (done by endSession) and the socket.
+            endSession('room-expired');
+            signalingClient?.leaveAndClose();
+          } else {
+            // rate-limited / bad-message / unsupported-type mean our messages are being dropped,
+            // so the call cannot be trusted to finish setting up: end it. (End first: closing the
+            // socket reports `closed-by-us`, which would otherwise win as 'hung-up'.)
+            endSession('signaling-connection-lost');
+            signalingClient?.leaveAndClose();
+          }
+        },
+        onClosed(closedReason) {
+          if (!isCurrentClient()) return;
+          if (closedReason === 'invalid-server-message') endSession('invalid-signaling-message');
+          else if (closedReason === 'connection-lost') {
+            if (reconnectScheduler.isActive) reconnectScheduler.scheduleNextAttempt();
+            else if (hasJoinedBefore) startReconnecting();
+            else endSession('signaling-connection-lost');
+          } else endSession('hung-up');
+        },
       },
-      onPeerJoined() {
-        openPeerConnection(false);
-      },
-      onPeerLeft() {
-        closePeerConnection();
-      },
-      onSignal(payload, initializationVector) {
-        // A signal while nobody is connected is never legitimate (the server relays in order,
-        // and `peer-left` comes after the peer's last signal): treat it like any bad message.
-        if (current === null) failVerification();
-        else receiveSignal(current, payload, initializationVector);
-      },
-      onServerError(errorCode) {
-        if (errorCode === 'room-full') endSession('room-full');
-        else if (errorCode === 'room-expired') {
-          // End first (closing the socket reports `closed-by-us`, which would win as 'hung-up'),
-          // then close the peer connection (done by endSession) and the socket.
-          endSession('room-expired');
-          signalingClient?.leaveAndClose();
-        } else {
-          // rate-limited / bad-message / unsupported-type mean our messages are being dropped,
-          // so the call cannot be trusted to finish setting up: end it. (End first: closing the
-          // socket reports `closed-by-us`, which would otherwise win as 'hung-up'.)
-          endSession('signaling-connection-lost');
-          signalingClient?.leaveAndClose();
-        }
-      },
-      onClosed(closedReason) {
-        if (closedReason === 'invalid-server-message') endSession('invalid-signaling-message');
-        else if (closedReason === 'connection-lost') endSession('signaling-connection-lost');
-        else endSession('hung-up');
-      },
-    },
+    });
+  }
+
+  /** Only a dropped connection leads here; hang-up, "No", errors and failed checks never do. */
+  function startReconnecting(): void {
+    // The old peer connection and its encrypted session are finished: a new join starts fresh.
+    closePeerConnection();
+    events.onReconnecting();
+    reconnectScheduler.start();
+  }
+
+  const reconnectScheduler = createReconnectScheduler({
+    attemptReconnect: connectAndJoin,
+    giveUp: () => endSession('reconnect-failed'),
   });
+
+  connectAndJoin();
 
   return {
     readSessionDescriptionSdps() {
