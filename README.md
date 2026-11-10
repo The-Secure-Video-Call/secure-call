@@ -4,7 +4,8 @@ A secure 1-to-1 video calling web app. Media is peer-to-peer (WebRTC); the signa
 relays opaque, end-to-end encrypted messages. The room secret lives only in the URL fragment.
 See [PLAN.md](PLAN.md) for the architecture and security design.
 
-> Status: milestone M0 (repository and tooling). No call functionality yet.
+> Status: milestones M0–M4 (hardening) are done. The app is live at
+> [securevideocall.com](https://securevideocall.com).
 
 ## Run locally
 
