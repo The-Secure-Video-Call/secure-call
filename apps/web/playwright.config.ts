@@ -32,6 +32,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: isCi ? 1 : 0,
+  // A test that passes only on retry still fails CI: a security check must not be flaky.
+  failOnFlakyTests: isCi,
   forbidOnly: isCi,
   reporter: isCi ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
@@ -74,7 +76,8 @@ export default defineConfig({
         // Plain HTTP on localhost: no redirect to HTTPS (healthz is exempt anyway).
         DJANGO_SECURE_SSL_REDIRECT: '0',
       },
-      reuseExistingServer: !isCi,
+      // Never someone else's server on this port (a dev backend, vite preview without the CSP).
+      reuseExistingServer: false,
       timeout: 120_000,
       stdout: 'ignore',
       stderr: 'pipe',
@@ -83,7 +86,8 @@ export default defineConfig({
       command: 'node e2e/serveBuiltSite.ts',
       url: `${SITE_ORIGIN}/`,
       env: { E2E_SITE_PORT: '4173', E2E_SIGNALING_ORIGIN: `ws://localhost:${SIGNALING_PORT}` },
-      reuseExistingServer: !isCi,
+      // Never someone else's server on this port (a dev backend, vite preview without the CSP).
+      reuseExistingServer: false,
       timeout: 30_000,
     },
   ],

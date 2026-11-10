@@ -8,7 +8,7 @@
 import { createServer } from 'node:http';
 import { readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
-import { readHeaderDirectives } from '../build-tools/securityHeadersCheck.ts';
+import { checkSecurityHeaders, readHeaderDirectives } from '../build-tools/securityHeadersCheck.ts';
 
 const PRODUCTION_SIGNALING_ORIGIN = 'wss://signal.securevideocall.com';
 const buildFolderPath = resolve(import.meta.dirname, '..', 'dist');
@@ -28,6 +28,12 @@ const CONTENT_TYPES: Record<string, string> = {
 
 function readProductionHeaders(): Record<string, string> {
   const htaccessText = readFileSync(join(buildFolderPath, '.htaccess'), 'utf8');
+  // Only top-level "Header always set" lines are applied below, which matches production as long
+  // as the build check passes (it forbids conditional, unset or weaker headers). So run it first.
+  const headerProblems = checkSecurityHeaders(htaccessText);
+  if (headerProblems.length > 0) {
+    throw new Error(`dist/.htaccess fails the build check:\n${headerProblems.join('\n')}`);
+  }
   const headers: Record<string, string> = {};
   for (const directive of readHeaderDirectives(htaccessText)) {
     if (directive.isTopLevel && directive.isAlways && directive.action === 'set') {
@@ -63,8 +69,11 @@ function replaceSignalingOriginInConnectSrc(contentSecurityPolicy: string): stri
   return directives.join(';');
 }
 
-/** The file to send for a URL path: a file inside dist/, else index.html (the app's one page). */
-function resolveFilePath(urlPath: string): string {
+/**
+ * The file to send for a URL path: a file inside dist/, else index.html (the app's one page), or
+ * null (404) for a dotfile such as .htaccess, whatever its case or encoding.
+ */
+function resolveFilePath(urlPath: string): string | null {
   let decodedUrlPath: string;
   try {
     decodedUrlPath = decodeURIComponent(urlPath);
@@ -72,9 +81,10 @@ function resolveFilePath(urlPath: string): string {
     // Malformed percent-encoding: serve the app's page instead of crashing the server.
     return join(buildFolderPath, 'index.html');
   }
+  if (decodedUrlPath.split(/[\\/]/).some((segment) => segment.startsWith('.'))) return null;
   const requestedPath = resolve(buildFolderPath, '.' + normalize(decodedUrlPath));
   const isInsideBuild = requestedPath.startsWith(buildFolderPath + sep);
-  if (isInsideBuild && !requestedPath.endsWith(`${sep}.htaccess`)) {
+  if (isInsideBuild) {
     try {
       if (statSync(requestedPath).isFile()) return requestedPath;
     } catch {
@@ -87,6 +97,11 @@ function resolveFilePath(urlPath: string): string {
 const productionHeaders = readProductionHeaders();
 createServer((request, response) => {
   const filePath = resolveFilePath(new URL(request.url ?? '/', 'http://localhost').pathname);
+  if (filePath === null) {
+    response.writeHead(404, productionHeaders);
+    response.end();
+    return;
+  }
   response.writeHead(200, {
     ...productionHeaders,
     'content-type': CONTENT_TYPES[extname(filePath)] ?? 'application/octet-stream',

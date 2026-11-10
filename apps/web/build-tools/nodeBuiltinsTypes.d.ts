@@ -1,6 +1,7 @@
-// Minimal types for the few Node built-ins the build tools use. The project adds no
-// @types/node dependency (CLAUDE.md: keep dependencies out of this change), and the web app
-// itself must never use these modules. Only build-tools/ may import them.
+// Minimal types for the few Node built-ins the build tools use. @types/node is a dev dependency
+// now (for the end-to-end tests, which type-check with e2e/tsconfig.json), but the app's
+// tsconfig deliberately leaves Node's types out, so these stay: the web app itself must never use
+// these modules. Only build-tools/ may import them.
 
 declare module 'node:fs' {
   export function existsSync(path: string | URL): boolean;
