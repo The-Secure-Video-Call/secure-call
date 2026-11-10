@@ -36,22 +36,43 @@ function readProductionHeaders(): Record<string, string> {
     }
   }
   const contentSecurityPolicy = headers['content-security-policy'];
-  if (
-    contentSecurityPolicy === undefined ||
-    !contentSecurityPolicy.includes(PRODUCTION_SIGNALING_ORIGIN)
-  ) {
-    throw new Error('dist/.htaccess has no CSP naming the production signaling origin');
+  if (contentSecurityPolicy === undefined) {
+    throw new Error('dist/.htaccess has no Content-Security-Policy header');
   }
-  headers['content-security-policy'] = contentSecurityPolicy.replace(
-    PRODUCTION_SIGNALING_ORIGIN,
-    localSignalingOrigin,
-  );
+  headers['content-security-policy'] = replaceSignalingOriginInConnectSrc(contentSecurityPolicy);
   return headers;
+}
+
+/** Swaps the production signaling origin for the local one, only as a whole connect-src source. */
+function replaceSignalingOriginInConnectSrc(contentSecurityPolicy: string): string {
+  let isSignalingOriginReplaced = false;
+  const directives = contentSecurityPolicy.split(';').map((directiveText) => {
+    const sources = directiveText.trim().split(/\s+/);
+    if (sources[0] !== 'connect-src') return directiveText;
+    return sources
+      .map((source) => {
+        if (source !== PRODUCTION_SIGNALING_ORIGIN) return source;
+        isSignalingOriginReplaced = true;
+        return localSignalingOrigin;
+      })
+      .join(' ');
+  });
+  if (!isSignalingOriginReplaced) {
+    throw new Error('dist/.htaccess has no connect-src naming the production signaling origin');
+  }
+  return directives.join(';');
 }
 
 /** The file to send for a URL path: a file inside dist/, else index.html (the app's one page). */
 function resolveFilePath(urlPath: string): string {
-  const requestedPath = resolve(buildFolderPath, '.' + normalize(decodeURIComponent(urlPath)));
+  let decodedUrlPath: string;
+  try {
+    decodedUrlPath = decodeURIComponent(urlPath);
+  } catch {
+    // Malformed percent-encoding: serve the app's page instead of crashing the server.
+    return join(buildFolderPath, 'index.html');
+  }
+  const requestedPath = resolve(buildFolderPath, '.' + normalize(decodedUrlPath));
   const isInsideBuild = requestedPath.startsWith(buildFolderPath + sep);
   if (isInsideBuild && !requestedPath.endsWith(`${sep}.htaccess`)) {
     try {
