@@ -55,7 +55,7 @@ jobs:
       - run: pnpm build
 
       # Hidden files are left out by default, which would drop .htaccess (the CSP and every
-      # security header), so they are included. The deploy job checks the digest on download.
+      # security header), so they are included. Kept 5 days, so a later approval still finds it.
       - name: Keep the built site for the deploy job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -63,7 +63,7 @@ jobs:
           path: apps/web/dist
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 5
 
   deploy:
     needs: build
@@ -72,27 +72,51 @@ jobs:
     environment:
       name: production
       url: https://securevideocall.com
+    # No token: the artifact of this run is fetched with the run's own runtime token.
+    permissions: {}
     steps:
-      # Fails if the files differ from what the build job uploaded (digest-mismatch: error).
+      # The digest check catches a corrupted download; it does not vouch for the build itself.
       - name: Get the built site
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-dist
           path: site
 
-      # Before touching the server: the site is complete, so `mirror --delete` below can never
-      # remove the live assets while index.html points at files that are not there.
-      - name: Check the built site is complete
+      # The build job runs third-party code, so its output is checked before anything reaches
+      # the server. Without this, a hostile build could ship a .php file or another .htaccess
+      # and get code running on the host without ever seeing the password. Checked:
+      # - only regular files with expected names (no links, no other files; names never echoed);
+      # - .htaccess (the CSP and every security header) byte for byte the repository's own at
+      #   this commit, fetched without a token because the repository is public;
+      # - every asset index.html points at is present, so `mirror --delete` below can never
+      #   remove the live assets while index.html points at files that are not there.
+      - name: Check the built site
+        env:
+          EXPECTED_HTACCESS_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/apps/web/public/.htaccess
         run: |
+          set -f
+          # Listings go to files first: with pipefail, `find | grep -q` can fail open when grep
+          # exits early and find is killed by SIGPIPE.
+          find site -mindepth 1 ! -type f ! -type d > special-entries.txt
+          if [ -s special-entries.txt ]; then
+            echo "the build contains links or special files"; exit 1
+          fi
+          find site -mindepth 1 > all-entries.txt
+          if LC_ALL=C grep -qvxE 'site/(index\.html|\.htaccess|assets|assets/[A-Za-z0-9_-]+\.(js|css|svg|png|webp|ico|woff2))' all-entries.txt; then
+            echo "the build contains unexpected files"; exit 1
+          fi
           test -f site/index.html || { echo "index.html missing"; exit 1; }
-          test -f site/.htaccess || { echo ".htaccess (security headers) missing"; exit 1; }
-          grep -q 'Content-Security-Policy' site/.htaccess || { echo ".htaccess has no CSP"; exit 1; }
-          referenced_assets=$(grep -oE '(src|href)="/assets/[^"]+"' site/index.html | sed -E 's#^[a-z]+="/##; s#"$##' | sort -u)
+          curl -fsSL --proto '=https' "$EXPECTED_HTACCESS_URL" -o expected.htaccess
+          cmp -s expected.htaccess site/.htaccess || { echo ".htaccess differs from the repository"; exit 1; }
+          referenced_assets=$( (grep -oE '(src|href)="/assets/[^"]*"' site/index.html || true) | sed -E 's#^[a-z]+="/##; s#"$##' | sort -u)
           [ -n "$referenced_assets" ] || { echo "index.html references no assets"; exit 1; }
-          for asset in $referenced_assets; do
+          asset_count=0
+          while IFS= read -r asset; do
+            [[ "$asset" =~ ^assets/[A-Za-z0-9_-]+\.[a-z0-9]+$ ]] || { echo "unexpected asset reference"; exit 1; }
             test -f "site/$asset" || { echo "missing: $asset"; exit 1; }
-          done
-          echo "site complete: index.html, .htaccess, $(echo "$referenced_assets" | wc -l | tr -d ' ') referenced assets"
+            asset_count=$((asset_count + 1))
+          done <<<"$referenced_assets"
+          echo "site checked: index.html, .htaccess identical to the repository, $asset_count referenced assets"
 
       # lftp, from Ubuntu's own packages: it handles the encrypted data connections this
       # FTP server requires (the Node-based deploy action had them reset).
@@ -102,6 +126,8 @@ jobs:
       # Encrypted control and data connections, certificate checked. Order matters: the new
       # assets go up first, then index.html that points at them, then .htaccess. Inside
       # assets/ old hashed files are removed; nothing else on the server is touched.
+      # cmd:fail-exit stops at the first failed command (lftp's default carries on), so
+      # index.html never goes up after a failed asset upload, and a failure fails the job.
       # The password reaches lftp only through LFTP_PASSWORD, never the command line.
       - name: Upload to securevideocall.com over FTPS
         env:
@@ -110,6 +136,7 @@ jobs:
           LFTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         run: |
           lftp --env-password -u "$FTP_USERNAME" "ftp://$FTP_SERVER" <<'LFTP'
+          set cmd:fail-exit true
           set ftp:ssl-force true
           set ftp:ssl-protect-data true
           set ftp:ssl-protect-list true
@@ -118,7 +145,7 @@ jobs:
           set net:timeout 30
           set net:max-retries 3
           set net:reconnect-interval-base 5
-          mirror --reverse --delete --verbose --no-perms site/assets assets
+          mirror --reverse --delete --verbose --no-perms --no-symlinks site/assets assets
           put -O . site/index.html
           put -O . site/.htaccess
           cls -l
