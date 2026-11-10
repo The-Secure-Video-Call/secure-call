@@ -4,6 +4,7 @@ import { fromBase64Url, toBase64Url } from '@/crypto/base64url';
 import { createSessionId, decideSenderRoles } from '@/crypto/signalEncryption';
 import { deriveSignalKey } from '@/crypto/signalKey';
 import { startCallSession, type CallPeerConnection } from '@/rtc/callSession';
+import { buildIceServers, PUBLIC_STUN_ICE_SERVERS } from '@/rtc/iceServers';
 import { decryptSignalPayload, encryptSignalPayload } from '@/rtc/signalPayloadCodec';
 import type { SignalingClientEvents } from '@/signaling/signalingClient';
 import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
@@ -35,6 +36,7 @@ const roomSecretBytes = new Uint8Array(32).fill(7);
 async function startSession(signalKey?: CryptoKey) {
   const roomSignalKey = await deriveSignalKey(roomSecretBytes);
   const peerConnections: ReturnType<typeof createMockPeerConnection>[] = [];
+  const iceServersUsed: RTCIceServer[][] = [];
   const signalingClient = {
     sendSignal: vi.fn<(payload: string, iv: string) => void>(),
     leaveAndClose: vi.fn(),
@@ -60,7 +62,8 @@ async function startSession(signalKey?: CryptoKey) {
     signalingUrl: 'ws://localhost:8000/ws/signal/',
     localMediaStream,
     events: sessionEvents,
-    createPeerConnection: () => {
+    createPeerConnection: (iceServers) => {
+      iceServersUsed.push(iceServers);
       const mockPeerConnection = createMockPeerConnection();
       peerConnections.push(mockPeerConnection);
       return mockPeerConnection as unknown as CallPeerConnection;
@@ -74,6 +77,7 @@ async function startSession(signalKey?: CryptoKey) {
   return {
     callSession,
     peerConnections,
+    iceServersUsed,
     signalingClient,
     sessionEvents,
     server,
@@ -604,6 +608,65 @@ describe('call session: encrypted signaling fails closed', () => {
     await fakePeer.readOurHello();
     await fakePeer.sendHello();
     await expectVerificationFailure(startedSession);
+  });
+
+  describe('TURN credentials', () => {
+    const turnCredentials = {
+      urls: ['turn:turn.example.com:3478?transport=udp'],
+      username: '1700003600:AAECAwQFBgcICQoLDA0ODw',
+      credential: 'AAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    };
+
+    it('builds the connection with the TURN server and STUN after joined with turn', async () => {
+      const { server, iceServersUsed } = await startSession();
+      server().onJoined('second', turnCredentials);
+      expect(iceServersUsed).toEqual([buildIceServers(turnCredentials)]);
+      expect(iceServersUsed[0]![0]).toMatchObject({
+        username: turnCredentials.username,
+        credential: turnCredentials.credential,
+      });
+    });
+
+    it('uses STUN only after joined without turn', async () => {
+      const { server, iceServersUsed } = await startSession();
+      server().onJoined('second');
+      expect(iceServersUsed).toEqual([PUBLIC_STUN_ICE_SERVERS]);
+    });
+
+    it('the person who gets peer-joined uses the credentials from their own joined', async () => {
+      const { server, iceServersUsed } = await startSession();
+      server().onJoined('first', turnCredentials);
+      expect(iceServersUsed).toHaveLength(0);
+      server().onPeerJoined();
+      server().onPeerLeft();
+      server().onPeerJoined();
+      expect(iceServersUsed).toEqual([
+        buildIceServers(turnCredentials),
+        buildIceServers(turnCredentials),
+      ]);
+    });
+
+    it('never puts the credential into a session problem', async () => {
+      const startedSession = await startSession();
+      startedSession.server().onJoined('second', turnCredentials);
+      startedSession.peerConnections[0]!.addTrack.mockImplementation(() => {
+        throw new Error('addTrack failed');
+      });
+      const fakePeer = createFakePeer(startedSession);
+      await fakePeer.readOurHello();
+      await fakePeer.sendHello();
+      await vi.waitFor(() =>
+        expect(startedSession.sessionEvents.onSessionEnded).toHaveBeenCalled(),
+      );
+      const everythingReported = JSON.stringify([
+        ...startedSession.sessionEvents.onSessionProblem.mock.calls.map(([problem]) =>
+          problem instanceof Error ? problem.message : problem,
+        ),
+        ...startedSession.sessionEvents.onSessionEnded.mock.calls,
+      ]);
+      expect(everythingReported).not.toContain(turnCredentials.credential);
+      expect(everythingReported).not.toContain(turnCredentials.username);
+    });
   });
 
   it('valid messages in order are all accepted', async () => {
