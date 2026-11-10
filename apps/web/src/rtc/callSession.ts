@@ -91,6 +91,12 @@ type PeerConnectionState = {
    * and after that. When it fires the call ends.
    */
   stallTimeoutId: ReturnType<typeof setTimeout> | null;
+  /**
+   * Runs from the peer's accepted hello until the peer connection first reaches `connected`; null
+   * before and after that. Started once per connection, so an ICE restart later never starts it
+   * again. When it fires the call ends.
+   */
+  connectTimeoutId: ReturnType<typeof setTimeout> | null;
 };
 
 export type CallSessionEvents = {
@@ -164,6 +170,15 @@ const MAX_SIGNALS_WHILE_OPENING = 1;
  * who holds the link cannot keep us waiting (threat-model limit 7).
  */
 export const PEER_STALL_TIMEOUT_MILLISECONDS = 10_000;
+
+/**
+ * How long the peer connection may take to reach `connected`, counted from accepting the peer's
+ * `hello`. Generous for TURN over slow mobile networks; short enough that a peer who sends a
+ * committed description and then goes quiet (or whose description cannot be applied) cannot keep
+ * us on "Connecting…" until the room expires (threat-model limit 7). Applies to the first connect
+ * only: ICE restarts of a connection that was connected are handled by `iceRestart.ts`.
+ */
+export const PEER_CONNECT_TIMEOUT_MILLISECONDS = 30_000;
 
 /**
  * Most incoming messages that may wait to be handled (or be in handling) at once. A real call
@@ -338,6 +353,12 @@ export function startCallSession(sessionOptions: {
       connection.stallTimeoutId = null;
       if (current === connection) failVerification();
     }, PEER_STALL_TIMEOUT_MILLISECONDS);
+    connection.connectTimeoutId = setTimeout(() => {
+      connection.connectTimeoutId = null;
+      if (current === connection && connection.peerConnection.connectionState !== 'connected') {
+        failVerification();
+      }
+    }, PEER_CONNECT_TIMEOUT_MILLISECONDS);
     // Only now, with both IDs known, may anything else be sent: adding tracks starts negotiation.
     for (const localTrack of localMediaStream.getTracks()) {
       connection.peerConnection.addTrack(localTrack, localMediaStream);
@@ -425,11 +446,18 @@ export function startCallSession(sessionOptions: {
     connection.stallTimeoutId = null;
   }
 
+  function clearConnectTimeout(connection: PeerConnectionState): void {
+    if (connection.connectTimeoutId === null) return;
+    clearTimeout(connection.connectTimeoutId);
+    connection.connectTimeoutId = null;
+  }
+
   function closePeerConnection(): void {
     pendingOpening = null; // a connection still being opened is cancelled too
     if (current === null) return;
     const { peerConnection, negotiation, iceRestartWatch } = current;
     clearStallTimeout(current);
+    clearConnectTimeout(current);
     current = null;
     negotiation.stop();
     iceRestartWatch.stop();
@@ -522,6 +550,7 @@ export function startCallSession(sessionOptions: {
       incomingWork: Promise.resolve(),
       waitingIncomingMessageCount: 0,
       stallTimeoutId: null,
+      connectTimeoutId: null,
     };
     current = connection;
     lastPeerConnectionNumber += 1;
@@ -531,6 +560,7 @@ export function startCallSession(sessionOptions: {
       if (remoteMediaStream !== undefined) events.onRemoteMediaStream(remoteMediaStream);
     };
     peerConnection.onconnectionstatechange = () => {
+      if (peerConnection.connectionState === 'connected') clearConnectTimeout(connection);
       events.onPeerConnectionStateChange(peerConnection.connectionState);
     };
     peerConnection.onsignalingstatechange = () => {

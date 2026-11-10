@@ -5,10 +5,12 @@ import { createSessionId, decideSenderRoles } from '@/crypto/signalEncryption';
 import { deriveSignalKey } from '@/crypto/signalKey';
 import {
   MAX_WAITING_INCOMING_MESSAGES,
+  PEER_CONNECT_TIMEOUT_MILLISECONDS,
   PEER_STALL_TIMEOUT_MILLISECONDS,
   startCallSession,
   type CallPeerConnection,
 } from '@/rtc/callSession';
+import { ICE_DISCONNECTED_GRACE_PERIOD_MILLISECONDS } from '@/rtc/iceRestart';
 import type { LocalCertificate } from '@/rtc/localCertificate';
 import { RECONNECT_WINDOW_MILLISECONDS } from '@/rtc/reconnect';
 import { decryptSignalPayload, encryptSignalPayload } from '@/rtc/signalPayloadCodec';
@@ -54,9 +56,9 @@ function createMockPeerConnection() {
     onnegotiationneeded: null,
     onicecandidate: null,
     ontrack: null,
-    onconnectionstatechange: null,
+    onconnectionstatechange: null as (() => void) | null,
     onsignalingstatechange: null,
-    oniceconnectionstatechange: null,
+    oniceconnectionstatechange: null as (() => void) | null,
     setLocalDescription: vi.fn(async () => {}),
     setRemoteDescription: vi.fn(async () => {}),
     addIceCandidate: vi.fn(async () => {}),
@@ -200,8 +202,8 @@ async function startSessionAfterHello(role: 'first' | 'second') {
   const fakePeer = startedSession.createFakePeer(0);
   await fakePeer.readOurHello();
   await fakePeer.sendHello();
-  // The peer's hello is accepted (and the stall timer started) once it is decrypted.
-  await waitUntil(() => vi.getTimerCount() === 1);
+  // The peer's hello is accepted (stall and connect timers started) once it is decrypted.
+  await waitUntil(() => vi.getTimerCount() === 2);
   return { ...startedSession, fakePeer };
 }
 
@@ -235,8 +237,8 @@ describe('call session: a peer that stalls after hello (threat-model limit 7)', 
       const { sessionEvents, fakePeer } = await startSessionAfterHello(role);
       await vi.advanceTimersByTimeAsync(PEER_STALL_TIMEOUT_MILLISECONDS - 1000);
       await fakePeer.send({ kind: 'offer', data: OFFER_DATA });
-      await waitUntil(() => vi.getTimerCount() === 0);
-      await vi.advanceTimersByTimeAsync(PEER_STALL_TIMEOUT_MILLISECONDS * 3);
+      await waitUntil(() => vi.getTimerCount() === 1); // only the connect timer is left
+      await vi.advanceTimersByTimeAsync(PEER_STALL_TIMEOUT_MILLISECONDS * 2);
       expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
     });
 
@@ -244,8 +246,8 @@ describe('call session: a peer that stalls after hello (threat-model limit 7)', 
       const { sessionEvents, fakePeer } = await startSessionAfterHello(role);
       await vi.advanceTimersByTimeAsync(PEER_STALL_TIMEOUT_MILLISECONDS - 1000);
       await fakePeer.send({ kind: 'answer', data: ANSWER_DATA });
-      await waitUntil(() => vi.getTimerCount() === 0);
-      await vi.advanceTimersByTimeAsync(PEER_STALL_TIMEOUT_MILLISECONDS * 3);
+      await waitUntil(() => vi.getTimerCount() === 1); // only the connect timer is left
+      await vi.advanceTimersByTimeAsync(PEER_STALL_TIMEOUT_MILLISECONDS * 2);
       expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
     });
   }
@@ -304,6 +306,89 @@ describe('call session: a peer that stalls after hello (threat-model limit 7)', 
     signalingClients[0]!.events.onSignal('AAAA', 'AAAA');
     await waitUntil(() => sessionEvents.onSessionEnded.mock.calls.length > 0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('call session: a connection that never comes up (threat-model limit 7)', () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }));
+  afterEach(() => vi.useRealTimers());
+
+  it('a peer that sends a committed answer and then stalls is ended at the connect timeout', async () => {
+    const { sessionEvents, signalingClients, peerConnections, fakePeer } =
+      await startSessionAfterHello('second');
+    await fakePeer.send({ kind: 'answer', data: ANSWER_DATA });
+    await waitUntil(() => vi.getTimerCount() === 1); // the stall timer is cleared, the other stays
+    await vi.advanceTimersByTimeAsync(PEER_CONNECT_TIMEOUT_MILLISECONDS - 1);
+    expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('message-verification-failed');
+    expect(peerConnections[0]!.close).toHaveBeenCalled();
+    expect(signalingClients[0]!.leaveAndClose).toHaveBeenCalled();
+  });
+
+  it('a committed offer whose description cannot be applied is reported, then ended at the timeout', async () => {
+    const { sessionEvents, peerConnections, fakePeer } = await startSessionAfterHello('second');
+    peerConnections[0]!.setRemoteDescription.mockRejectedValue(new Error('cannot apply'));
+    await fakePeer.send({ kind: 'offer', data: OFFER_DATA });
+    await waitUntil(() => sessionEvents.onSessionProblem.mock.calls.length > 0);
+    // A failed description alone does not end the call (it may be a harmless race) ...
+    expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+    // ... but a connection that never comes up is bounded.
+    await vi.advanceTimersByTimeAsync(PEER_CONNECT_TIMEOUT_MILLISECONDS);
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('message-verification-failed');
+  });
+
+  it('a call that connects in time is not ended, however long it then runs', async () => {
+    const { sessionEvents, peerConnections, fakePeer } = await startSessionAfterHello('second');
+    await fakePeer.send({ kind: 'answer', data: ANSWER_DATA });
+    await waitUntil(() => vi.getTimerCount() === 1);
+    await vi.advanceTimersByTimeAsync(PEER_CONNECT_TIMEOUT_MILLISECONDS - 1000);
+    peerConnections[0]!.connectionState = 'connected';
+    peerConnections[0]!.onconnectionstatechange!();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(PEER_CONNECT_TIMEOUT_MILLISECONDS * 10);
+    expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+  });
+
+  it('an ICE restart of a connected call does not start the timer again', async () => {
+    const { sessionEvents, peerConnections, fakePeer } = await startSessionAfterHello('second');
+    await fakePeer.send({ kind: 'answer', data: ANSWER_DATA });
+    await waitUntil(() => vi.getTimerCount() === 1);
+    const peerConnection = peerConnections[0]!;
+    peerConnection.connectionState = 'connected';
+    peerConnection.onconnectionstatechange!();
+    peerConnection.iceConnectionState = 'disconnected';
+    peerConnection.connectionState = 'disconnected';
+    peerConnection.oniceconnectionstatechange!();
+    await vi.advanceTimersByTimeAsync(ICE_DISCONNECTED_GRACE_PERIOD_MILLISECONDS);
+    expect(peerConnection.restartIce).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(PEER_CONNECT_TIMEOUT_MILLISECONDS * 3);
+    expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+  });
+
+  it('hanging up clears the connect timer', async () => {
+    const { sessionEvents, callSession } = await startSessionAfterHello('second');
+    callSession.hangUp();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(PEER_CONNECT_TIMEOUT_MILLISECONDS * 2);
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('hung-up');
+  });
+
+  it('the peer leaving clears the connect timer', async () => {
+    const { sessionEvents, signalingClients } = await startSessionAfterHello('second');
+    signalingClients[0]!.events.onPeerLeft();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(PEER_CONNECT_TIMEOUT_MILLISECONDS * 2);
+    expect(sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+  });
+
+  it('a dropped socket (reconnect) clears the connect timer', async () => {
+    const { sessionEvents, signalingClients } = await startSessionAfterHello('second');
+    signalingClients[0]!.events.onClosed('connection-lost');
+    await vi.advanceTimersByTimeAsync(PEER_CONNECT_TIMEOUT_MILLISECONDS - 1);
+    expect(sessionEvents.onSessionEnded).not.toHaveBeenCalledWith('message-verification-failed');
   });
 });
 
