@@ -39,5 +39,12 @@ export default tseslint.config(
   },
   { files: ['apps/web/**/*.{ts,tsx}'], languageOptions: { globals: globals.browser } },
   { files: ['*.js', 'scripts/**/*.mjs'], languageOptions: { globals: globals.node } },
+  {
+    // Build-time code runs in Node and in the Vite config loader, which do not resolve `@/`,
+    // so it imports its neighbours with relative paths. It is never bundled into the app.
+    files: ['apps/web/build-tools/**/*.ts', 'apps/web/vite.config.ts'],
+    languageOptions: { globals: globals.node },
+    rules: { 'no-restricted-imports': 'off' },
+  },
   prettier,
 );

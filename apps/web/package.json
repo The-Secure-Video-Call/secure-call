@@ -8,7 +8,8 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "tsc --noEmit && vite build"
+    "build": "tsc --noEmit && vite build",
+    "check:build": "node build-tools/checkBuildOutputCli.ts dist"
   },
   "dependencies": {
     "react": "19.3.1",

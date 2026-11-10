@@ -1,5 +1,6 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+import { subresourceIntegrityPlugin } from './build-tools/subresourceIntegrityPlugin.ts';
 
 /** Absolute path of a folder given relative to this config file. */
 function folderNextToThisConfig(relativeFolderPath: string): string {
@@ -10,7 +11,7 @@ function folderNextToThisConfig(relativeFolderPath: string): string {
 //   @/...         -> apps/web/src/...
 //   @protocol/... -> packages/protocol/src/...
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), subresourceIntegrityPlugin()],
   resolve: {
     alias: {
       '@': folderNextToThisConfig('src'),
