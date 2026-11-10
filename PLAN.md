@@ -247,7 +247,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 - [x] "Privacy mode" toggle (relay-only, hides your IP from the other person)
 - [x] Reconnect: ICE restart on network change (Wi-Fi ↔ mobile), WebSocket auto-reconnect
 - [x] Connection quality indicator (from `getStats()`: packet loss, round-trip time)
-- [ ] Mobile layout and testing on iOS Safari and Android Chrome
+- [x] Mobile layout and testing on iOS Safari and Android Chrome
 
 **Demo:** a call between a laptop on Wi-Fi and a phone on mobile data.
 
