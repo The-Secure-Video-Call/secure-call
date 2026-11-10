@@ -38,6 +38,6 @@ export default tseslint.config(
     },
   },
   { files: ['apps/web/**/*.{ts,tsx}'], languageOptions: { globals: globals.browser } },
-  { files: ['*.js'], languageOptions: { globals: globals.node } },
+  { files: ['*.js', 'scripts/**/*.mjs'], languageOptions: { globals: globals.node } },
   prettier,
 );
