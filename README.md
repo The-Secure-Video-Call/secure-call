@@ -36,6 +36,34 @@ are reported, not read.
 it reaches only eslint tooling). Remove the override once eslint and typescript-eslint accept
 `minimatch` 11.0.1 or later, and bump it by hand until then.
 
+### End-to-end tests
+
+`apps/web/e2e/` holds Playwright tests in which real browsers with fake cameras make an
+encrypted call through a real signaling server, under the production CSP from
+`apps/web/public/.htaccess` (only `connect-src` points at the local server). They check:
+
+- a full call: both sides connect, see each other's video, show the same safety code and
+  verify it, and a hang-up reaches the other side (Chromium and Firefox);
+- a tampered and a replayed signaling message each end the call before any media flows;
+- a third person is told the call is full;
+- privacy mode with no relay fails closed and sends no signaling message;
+- no CSP or Trusted Types violation and no uncaught error anywhere.
+
+CI runs them on every PR (the `e2e` job). To run them locally you need
+[uv](https://docs.astral.sh/uv/) and a checkout of
+[secure-call-backend](https://github.com/The-Secure-Video-Call/secure-call-backend); Playwright
+starts the backend from it and serves the built app:
+
+```sh
+VITE_SIGNALING_URL=ws://localhost:8000/ws/signal/ pnpm build
+cd apps/web
+pnpm exec playwright install chromium firefox   # once; or E2E_CHROMIUM_CHANNEL=chrome
+E2E_BACKEND_DIR=/path/to/secure-call-backend pnpm test:e2e
+```
+
+All browsers share one IP and the backend allows 20 joins per IP per minute, so the suite runs
+with one worker and Firefox runs only the full call.
+
 ## Layout
 
 - `apps/web` – React + Vite client

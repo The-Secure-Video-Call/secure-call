@@ -6,3 +6,5 @@ PLAN.md
 .claude
 # Byte-for-byte copy of the backend's protocol/ folder (pnpm protocol:sync)
 packages/protocol/contract
+test-results
+playwright-report
