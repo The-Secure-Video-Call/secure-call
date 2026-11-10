@@ -106,9 +106,15 @@ This list is intentionally blunt.
 6. **A changed remote fingerprint is refused before it is applied.** Every offer and answer must
    carry the fingerprint the other side committed to in its `hello`; a renegotiation that brings a
    different one ends the call before the description is used.
-7. **No timeout between `hello` and the first offer, and no cap on the incoming message queue yet.**
-   A peer who holds the link can send a `hello` and then stall, or send many messages, to waste the
-   other side's time or memory until the room expires.
+7. **A peer who holds the link can still waste a little of the other side's time, within limits.**
+   The web client ends the call if neither an offer nor an answer arrives within 10 seconds of
+   accepting the peer's `hello` (`PEER_STALL_TIMEOUT_MILLISECONDS`), and fails verification when more
+   than 64 incoming messages are waiting to be handled (`MAX_WAITING_INCOMING_MESSAGES`). What stays: the timer
+   only waits for a first offer or answer that carries the committed fingerprint, not for the
+   connection to come up. A peer that sends one and then stalls (or whose description cannot be
+   applied) is not timed out, and there is no connect timeout yet, so such a peer can hold the call
+   open until the room expires. The server's own message rate limit is the only bound on how fast
+   messages arrive below the queue cap.
 8. **A room ID can be reused after expiry** (above). Treat a link as single-use.
 9. **Rooms are in memory in one process.** A server restart ends all calls, and the room rules are
    only correct with one server process; going to several processes needs a different room store.

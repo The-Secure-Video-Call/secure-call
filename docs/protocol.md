@@ -219,6 +219,13 @@ own `hello`, offer or answer cannot be sent (or the certificate for the connecti
 message, `room-full`, `room-expired`, `rate-limited`, `bad-message` or `unsupported-type`, when
 the socket is lost, or when the people hang up. A failed candidate send is only reported.
 
+It also ends (as `message-verification-failed`) when the peer says `hello` but no offer **or**
+answer follows within 10 seconds (the side that did not start the negotiation may receive only an
+answer), and when more than 64 received messages are waiting to be handled. The 10 second timer
+starts when the `hello` is accepted and stops when an offer or answer passes the fingerprint check,
+or when the connection closes or the call ends. It does not wait for the connection to come up:
+there is no connect timeout yet.
+
 ## 6. Safety code
 
 After the peer connection is up, both sides compute the same six symbols from the two DTLS
