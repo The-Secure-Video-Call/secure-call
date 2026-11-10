@@ -37,10 +37,11 @@ jobs:
 
       # pnpm version comes from "packageManager" in package.json.
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      # No cache: what is deployed is installed clean from the lockfile, never from a cache
+      # another workflow (for example the e2e job, which runs unreviewed upstream code) wrote.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
-          cache: pnpm
 
       # Never ship what CI would reject: the same pin check and audits as ci.yml, before install.
       - run: node scripts/check-pinned-actions.mjs

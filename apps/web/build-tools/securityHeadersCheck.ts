@@ -3,7 +3,7 @@
 //
 // Tightening a header on purpose means editing the expectations below in the same change.
 
-type HeaderDirective = {
+export type HeaderDirective = {
   action: string;
   headerName: string;
   headerValue: string | undefined;
@@ -21,7 +21,8 @@ function splitIntoWords(line: string): string[] {
   return words;
 }
 
-function readHeaderDirectives(htaccessText: string): HeaderDirective[] {
+/** Every `Header` line of an .htaccess file (also used by the end-to-end test server). */
+export function readHeaderDirectives(htaccessText: string): HeaderDirective[] {
   const joinedText = htaccessText.replace(/\\\r?\n/g, ' ');
   const headerDirectives: HeaderDirective[] = [];
   let sectionDepth = 0;

@@ -4,5 +4,8 @@ coverage
 .env
 .env.*
 *.log
+# Playwright output (end-to-end tests)
+test-results/
+playwright-report/
 # Read-only copy of the other repo, checked out by the Claude workflows
 .reference/

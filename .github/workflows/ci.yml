@@ -53,3 +53,68 @@ jobs:
       # PLAN.md 3.5 present and not weakened (apps/web/build-tools/).
       - name: Check the built app
         run: pnpm --filter @secure-call/web check:build
+
+  # The M4 demo: two real browsers with fake cameras complete an encrypted call through the real
+  # signaling server (secure-call-backend main, run from source), under the production CSP
+  # (apps/web/playwright.config.ts, apps/web/e2e/). Runs PR code with the read-only token and no
+  # secrets. Chromium runs every test; Firefox runs the full call.
+  # No caches: this job runs code nobody here reviews (the backend's main and its PyPI packages,
+  # uv, browsers from Playwright's CDN), so it must not write a cache other jobs restore.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The backend repository is public; its main branch is what production runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: The-Secure-Video-Call/secure-call-backend
+          path: .reference/secure-call-backend
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+
+      # The same uv as the backend's image (its Dockerfile pins it), not whatever is newest.
+      - name: uv version of the backend
+        id: backend-uv
+        run: |
+          uv_version="$(sed -n 's#^FROM ghcr.io/astral-sh/uv:\([0-9.]*\)@.*#\1#p' .reference/secure-call-backend/Dockerfile)"
+          [ -n "$uv_version" ] || { echo "no pinned uv in the backend's Dockerfile"; exit 1; }
+          echo "version=$uv_version" >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ steps.backend-uv.outputs.version }}
+          enable-cache: false
+      - name: Backend dependencies (locked, no dev tools)
+        working-directory: .reference/secure-call-backend
+        run: uv sync --locked --no-dev
+
+      - name: Playwright's browsers
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps chromium firefox
+      - name: Build against the local signaling server
+        env:
+          VITE_SIGNALING_URL: ws://localhost:8000/ws/signal/
+        run: pnpm build
+      - name: End-to-end tests
+        run: pnpm --filter @secure-call/web test:e2e
+
+      # Traces and screenshots hold fake camera frames and test data only: call links (with their
+      # secret after the #), room IDs and encrypted frames of a backend thrown away with the job.
+      - name: Keep the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

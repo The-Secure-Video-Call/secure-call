@@ -6,16 +6,19 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p e2e/tsconfig.json",
     "test": "vitest run",
     "build": "tsc --noEmit && vite build",
-    "check:build": "node build-tools/checkBuildOutputCli.ts dist"
+    "check:build": "node build-tools/checkBuildOutputCli.ts dist",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "22.20.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.2.1",
