@@ -6,13 +6,15 @@
 # No personal data: the checks only read two public URLs, and the issue says which URL failed and
 # when, nothing else. Nothing runs on the Pis. The logic lives in scripts/check-uptime.sh.
 #
-# Limits: GitHub may start scheduled runs late under load, and it pauses schedules in a public
-# repository after 60 days without activity (any push re-enables them).
+# Limits: GitHub may start scheduled runs late under load, and in a public repository it disables
+# scheduled workflows after 60 days without activity. A push does not turn this one back on:
+# re-enable it on the Actions tab or with `gh workflow enable uptime.yml`.
 name: Uptime
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    # Minute 3, 13, 23 and so on: GitHub delays and drops more runs at the top of the hour.
+    - cron: '3-59/10 * * * *'
   workflow_dispatch:
 
 permissions:
