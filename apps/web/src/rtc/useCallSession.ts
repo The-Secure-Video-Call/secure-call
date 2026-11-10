@@ -76,6 +76,11 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
   }, [roomSecret, localMediaStream]);
 
   const hangUp = useCallback(() => callSessionRef.current?.hangUp(), []);
+  const replaceLocalVideoTrack = useCallback(
+    (newVideoTrack: MediaStreamTrack) =>
+      callSessionRef.current?.replaceLocalVideoTrack(newVideoTrack) ?? Promise.resolve(),
+    [],
+  );
   const readSessionDescriptionSdps = useCallback(
     () => callSessionRef.current?.readSessionDescriptionSdps() ?? null,
     [],
@@ -92,6 +97,7 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
     sessionDescriptionsVersion,
     endedReason,
     hangUp,
+    replaceLocalVideoTrack,
     readSessionDescriptionSdps,
   };
 }
