@@ -166,6 +166,12 @@ async function openCall(person: Person, callLink: string) {
   expect(contentSecurityPolicy).toContain(`connect-src 'self' ${LOCAL_SIGNALING_ORIGIN}`);
 }
 
+/** The secret is gone from the address bar (the page keeps its own copy in memory). */
+async function expectSecretRemovedFromAddressBar(person: Person) {
+  await expect.poll(() => person.page.evaluate(() => window.location.hash)).toBe('');
+  expect(person.page.url()).not.toContain('#');
+}
+
 function callStatus(person: Person) {
   return person.page.locator('p.call-status');
 }
@@ -335,8 +341,15 @@ test('@every-browser two people complete an encrypted call, verify it and hang u
   expect(aliceAfterRejoin.certificatesProbedAndFresh).toBe(true);
   expect(aliceAfterRejoin.probeSetADescription).toBe(false);
 
+  // Both are still in the call, so both links are still in the address bar.
+  for (const person of [alice, bob]) expect(person.page.url()).toContain('#');
+
   await alice.page.getByRole('button', { name: 'Hang up' }).click();
   await expect(callStatus(bob)).toHaveText(OTHER_PERSON_LEFT_TEXT);
+  // The other person leaving does not end Bob's session: his link stays, so he can reload.
+  expect(bob.page.url()).toContain('#');
+  // Alice hung up: she is back at the start page without the secret.
+  await expectSecretRemovedFromAddressBar(alice);
 });
 
 for (const tampering of [
@@ -355,6 +368,7 @@ for (const tampering of [
     await startCall(alice, bob);
 
     await expect(bob.page.getByText(VERIFICATION_FAILED_TEXT)).toBeVisible();
+    await expectSecretRemovedFromAddressBar(bob);
     expect(tampered.count).toBe(1);
     await expectNoMediaEverFlowed(bob);
   });
@@ -389,6 +403,9 @@ test('a third person opening the link is told the call is full', async ({
 
   await openCall(carol, callLink);
   await expect(carol.page.getByText(ROOM_FULL_TEXT)).toBeVisible();
+  await expectSecretRemovedFromAddressBar(carol);
+  // Alice's session goes on, so her link stays.
+  expect(alice.page.url()).toContain('#');
   await expect(callStatus(alice)).toHaveText(CONNECTED_TEXT);
   expect((await readCallHistory(carol)).peerConnections).toBe(0);
 });
@@ -413,6 +430,7 @@ test('privacy mode without a relay fails closed and sends nothing', async ({
   await openCall(alice, callLink);
 
   await expect(alice.page.getByText(PRIVACY_NEEDS_RELAY_TEXT)).toBeVisible();
+  await expectSecretRemovedFromAddressBar(alice);
   // "leave" is the last thing Alice sends on that socket, so everything she sent is counted.
   await expect.poll(() => typesAliceSent).toContain('leave');
   expect(typesAliceSent).toContain('join');
