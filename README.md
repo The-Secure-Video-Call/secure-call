@@ -26,6 +26,10 @@ pnpm audit --prod --audit-level moderate       # production dependencies: modera
 pnpm audit --audit-level high                  # dev tooling too: high or worse fails
 ```
 
+CI also checks that the build is reproducible (`reproducible-build`), and every deploy publishes
+the hashes of what it uploaded as a `web-<commit>` GitHub Release; `node scripts/verify-deployed.mjs`
+checks the live site against it (SECURITY.md).
+
 Dependencies are pinned to exact versions (`.npmrc` has `save-exact=true`), and Dependabot
 proposes updates for them and for the pinned Actions every week, 7 days after a release. Node
 in `.node-version` is bumped by hand. The pin check accepts one form only,

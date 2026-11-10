@@ -118,3 +118,51 @@ jobs:
             apps/web/test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+  # The same commit must build to byte-identical files, which is what lets anyone rebuild a
+  # release and compare it with its published SHA256SUMS (deploy-web.yml, SECURITY.md). Two clean
+  # checkouts at different paths, built at different times in different time zones, with
+  # SOURCE_DATE_EPOCH from the commit as the deploy uses; every file of dist/ must match.
+  reproducible-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: first
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: second/in/a/longer/path
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: first/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: first/.node-version
+          cache: pnpm
+          cache-dependency-path: first/pnpm-lock.yaml
+      - name: First build
+        working-directory: first
+        run: |
+          pnpm install --frozen-lockfile
+          TZ=UTC SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" pnpm build
+      - name: Second build, at another path, later, in another time zone
+        working-directory: second/in/a/longer/path
+        run: |
+          sleep 3
+          pnpm install --frozen-lockfile
+          TZ=Pacific/Auckland SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" pnpm build
+      - name: Both builds are byte-identical
+        run: |
+          (cd first/apps/web/dist && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > first.sums
+          (cd second/in/a/longer/path/apps/web/dist && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > second.sums
+          cat first.sums
+          [ -s first.sums ] || { echo "no files were built"; exit 1; }
+          if diff first.sums second.sums; then
+            echo "Reproducible: both builds are byte-identical."
+          else
+            echo "NOT reproducible: the two builds differ (see above)."
+            exit 1
+          fi

@@ -8,6 +8,10 @@
 # - deploy: waits until a reviewer of the "production" environment approves it, then uploads
 #   exactly the files the build job made. No checkout, no Node and no project code run here;
 #   only the downloaded files, shell checks and lftp from Ubuntu's own packages.
+# - release: after a successful upload, publishes SHA256SUMS of exactly those files as the
+#   GitHub Release "web-<commit>", so anyone can check the live site against this repository
+#   (scripts/verify-deployed.mjs, SECURITY.md). The build is reproducible (ci.yml checks it),
+#   so anyone can also rebuild the commit and compare.
 #
 # Settings live in the "production" environment: variables FTP_SERVER and FTP_USERNAME,
 # secret FTP_PASSWORD.
@@ -53,7 +57,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
-      - run: pnpm build
+      # The commit's time as the build time, so the output depends only on the commit.
+      - name: Build
+        run: SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" pnpm build
       # The built app: SRI hashes match the files, no inline code, every security header from
       # PLAN.md 3.5 present and not weakened (apps/web/build-tools/).
       - name: Check the built app
@@ -156,3 +162,67 @@ jobs:
           cls -l
           bye
           LFTP
+
+  # The only job that can write to the repository (it creates the release and its tag). It has
+  # no secret and runs no project code. It hashes the artifact the deploy job checked and
+  # uploaded, and reads the toolchain versions from the repository at this commit, never from
+  # the build job (which runs third-party code) so nothing from there reaches this step.
+  release:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Get the built site
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: site
+      - name: Toolchain files at this commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: source
+          sparse-checkout: |
+            .node-version
+            package.json
+          sparse-checkout-cone-mode: false
+      # Re-running a deploy of the same commit must give the same hashes (reproducible build);
+      # a different SHA256SUMS for an existing release fails instead of being replaced.
+      - name: Publish SHA256SUMS as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="web-${COMMIT:0:12}"
+          (cd site && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > SHA256SUMS
+          cat SHA256SUMS
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release download "$tag" --pattern SHA256SUMS --output published-SHA256SUMS
+            if cmp -s SHA256SUMS published-SHA256SUMS; then
+              echo "$tag is already published with these exact hashes (reproducible)."
+              exit 0
+            fi
+            echo "$tag exists with DIFFERENT hashes: the build is not reproducible. Not replacing it."
+            exit 1
+          fi
+          node_version="$(tr -d '[:space:]' < source/.node-version)"
+          pnpm_version="$(sed -n 's/.*"packageManager": *"pnpm@\([0-9.]*\)".*/\1/p' source/package.json)"
+          [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected .node-version"; exit 1; }
+          [[ "$pnpm_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected packageManager"; exit 1; }
+          {
+            echo "The files deployed to https://securevideocall.com from commit $COMMIT."
+            echo
+            echo "Built with Node $node_version and pnpm $pnpm_version (pinned in the repository),"
+            echo "with SOURCE_DATE_EPOCH set to the commit time. The build is reproducible."
+            echo
+            echo "Check the live site against this release:"
+            echo
+            echo '    node scripts/verify-deployed.mjs --release '"$tag"
+            echo
+            echo "or rebuild the commit yourself and compare (SECURITY.md)."
+          } > release-notes.md
+          gh release create "$tag" SHA256SUMS --target "$COMMIT" --title "Web app $tag" --notes-file release-notes.md
