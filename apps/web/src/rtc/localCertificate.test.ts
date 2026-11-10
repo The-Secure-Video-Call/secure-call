@@ -39,6 +39,7 @@ describe('local certificate', () => {
     expect(generateCertificate).toHaveBeenCalledTimes(2);
     expect(first.certificate).toBe(certificates[0]);
     expect(second.certificate).toBe(certificates[1]);
+    expect(first.fingerprint).toBe(FINGERPRINT); // normalised from the lower-case SDP line
     expect(first.fingerprintCommitment).toBe(await computeFingerprintCommitment(FINGERPRINT));
     for (const probe of probesByCertificate.values()) {
       expect(probe.createDataChannel).toHaveBeenCalled();
@@ -55,6 +56,26 @@ describe('local certificate', () => {
           createProbe(`a=fingerprint:${FINGERPRINT}\r\n`) as unknown as FingerprintProbe,
       });
       expect(generateCertificate).toHaveBeenCalledWith({ name: 'ECDSA', namedCurve: 'P-256' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('by default the probe has our certificate and no ICE servers, so it sends nothing', async () => {
+    const configurations: RTCConfiguration[] = [];
+    const probe = createProbe(`a=fingerprint:${FINGERPRINT}\r\n`);
+    class StubPeerConnection {
+      constructor(configuration: RTCConfiguration) {
+        configurations.push(configuration);
+        Object.assign(this, probe);
+      }
+    }
+    vi.stubGlobal('RTCPeerConnection', StubPeerConnection);
+    try {
+      const certificate = { id: 'ours' } as unknown as RTCCertificate;
+      expect(await readCertificateFingerprint(certificate)).toBe(FINGERPRINT);
+      expect(configurations).toEqual([{ certificates: [certificate] }]);
+      expect(probe.close).toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }

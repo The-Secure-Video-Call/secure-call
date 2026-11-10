@@ -73,6 +73,21 @@ describe('readFingerprintFromSdp', () => {
     );
   });
 
+  it.each([
+    ['upper-case attribute name', `a=FINGERPRINT:sha-256 ${secondFingerprintHex}`],
+    ['mixed-case attribute name', `a=Fingerprint:sha-256 ${secondFingerprintHex}`],
+    ['space instead of colon', `a=fingerprint sha-256 ${secondFingerprintHex}`],
+    ['space before the name', `a= fingerprint:sha-256 ${secondFingerprintHex}`],
+  ])(
+    'rejects, never skips, a line a lenient parser might read as a fingerprint: %s',
+    (_description, fingerprintLikeLine) => {
+      // Next to a valid line: skipping the odd one would return the valid fingerprint.
+      expect(() => readFingerprintFromSdp(`${firstSdp}\r\n${fingerprintLikeLine}`)).toThrow(
+        SafetyCodeError,
+      );
+    },
+  );
+
   it('does not put SDP content into the error message', () => {
     try {
       readFingerprintFromSdp(sdpWithFingerprintLine('a=fingerprint:sha-256 SECRET-VALUE'));

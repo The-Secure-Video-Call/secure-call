@@ -20,6 +20,7 @@ const PEER_FINGERPRINT_COMMITMENT = await computeFingerprintCommitment(fakeFinge
 const LOCAL_CERTIFICATES: LocalCertificate[] = await Promise.all(
   Array.from({ length: 16 }, async (_, certificateIndex) => ({
     certificate: { fakeCertificateNumber: certificateIndex } as unknown as RTCCertificate,
+    fingerprint: fakeFingerprint(certificateIndex),
     fingerprintCommitment: await computeFingerprintCommitment(fakeFingerprint(certificateIndex)),
   })),
 );

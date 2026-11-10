@@ -43,19 +43,28 @@ export function isWellFormedFingerprintCommitment(commitmentText: string): boole
 }
 
 /**
- * Whether the one DTLS fingerprint in an SDP is the committed one. False for an SDP with no
- * fingerprint, with several different ones or with a malformed one.
+ * The one DTLS fingerprint in an SDP (normalised) if it is the committed one, else null: also for
+ * an SDP with no fingerprint, with several different ones or with a malformed one.
  */
-export async function doesSdpMatchFingerprintCommitment(
+export async function readCommittedFingerprint(
   sessionDescriptionSdp: string,
   fingerprintCommitment: string,
-): Promise<boolean> {
+): Promise<string | null> {
   let fingerprint: string;
   try {
     fingerprint = readFingerprintFromSdp(sessionDescriptionSdp);
   } catch (readError) {
-    if (readError instanceof SafetyCodeError) return false;
+    if (readError instanceof SafetyCodeError) return null;
     throw readError;
   }
-  return (await computeFingerprintCommitment(fingerprint)) === fingerprintCommitment;
+  const isCommitted = (await computeFingerprintCommitment(fingerprint)) === fingerprintCommitment;
+  return isCommitted ? fingerprint : null;
+}
+
+/** Whether the one DTLS fingerprint in an SDP is the committed one (see readCommittedFingerprint). */
+export async function doesSdpMatchFingerprintCommitment(
+  sessionDescriptionSdp: string,
+  fingerprintCommitment: string,
+): Promise<boolean> {
+  return (await readCommittedFingerprint(sessionDescriptionSdp, fingerprintCommitment)) !== null;
 }

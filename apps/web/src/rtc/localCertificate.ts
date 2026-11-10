@@ -11,7 +11,9 @@ import { readFingerprintFromSdp } from '@/crypto/safetyCode';
 
 export type LocalCertificate = {
   certificate: RTCCertificate;
-  /** Of the fingerprint the browser puts in our SDP for this certificate. */
+  /** The fingerprint the browser puts in our SDP for this certificate, normalised. */
+  fingerprint: string;
+  /** Of that fingerprint, sent in our hello. */
   fingerprintCommitment: string;
 };
 
@@ -57,5 +59,9 @@ export async function prepareLocalCertificate(
     (() => RTCPeerConnection.generateCertificate(CERTIFICATE_KEY_PARAMETERS));
   const certificate = await generateCertificate();
   const fingerprint = await readCertificateFingerprint(certificate, options.createProbe);
-  return { certificate, fingerprintCommitment: await computeFingerprintCommitment(fingerprint) };
+  return {
+    certificate,
+    fingerprint,
+    fingerprintCommitment: await computeFingerprintCommitment(fingerprint),
+  };
 }

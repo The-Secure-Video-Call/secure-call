@@ -9,6 +9,11 @@ const BITS_PER_INDEX = 6;
 const SAFETY_CODE_BYTES_USED = 5; // 36 bits fit in 5 bytes (40 bits); the last 4 bits are dropped
 const FINGERPRINT_SEPARATOR = '\n'; // cannot occur inside a normalised fingerprint
 const FINGERPRINT_LINE_PREFIX = 'a=fingerprint:';
+/**
+ * Any line a lenient parser might take for a fingerprint (another letter case, a space): such a
+ * line is refused rather than skipped, so no browser can use a fingerprint this code never saw.
+ */
+const FINGERPRINT_LIKE_LINE = /^a\s*=\s*fingerprint/i;
 
 /** Digest sizes in bytes for the accepted hash names. sha-1 is deliberately not accepted. */
 const FINGERPRINT_BYTES_BY_HASH_NAME: ReadonlyMap<string, number> = new Map([
@@ -110,7 +115,10 @@ export const SAFETY_CODE_EMOJI: readonly { emoji: string; name: string }[] = [
 export function readFingerprintFromSdp(sessionDescriptionSdp: string): string {
   const distinctFingerprints = new Set<string>();
   for (const sdpLine of sessionDescriptionSdp.split(/\r\n|\n/)) {
-    if (!sdpLine.startsWith(FINGERPRINT_LINE_PREFIX)) continue;
+    if (!sdpLine.startsWith(FINGERPRINT_LINE_PREFIX)) {
+      if (FINGERPRINT_LIKE_LINE.test(sdpLine)) throw new SafetyCodeError('malformed-fingerprint');
+      continue;
+    }
     distinctFingerprints.add(normaliseFingerprint(sdpLine.slice(FINGERPRINT_LINE_PREFIX.length)));
   }
   if (distinctFingerprints.size === 0) throw new SafetyCodeError('no-fingerprint');

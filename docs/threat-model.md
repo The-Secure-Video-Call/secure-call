@@ -98,7 +98,9 @@ This list is intentionally blunt.
    they trust, and compare all six symbols. If nobody compares, a man in the middle with the link goes
    unnoticed. When they do compare, his chance of matching codes is 2^-36 per attempt: both sides
    commit to their DTLS fingerprints in the encrypted `hello` before any SDP is sent, so he has to
-   choose his certificates blind (`docs/protocol.md` section 5).
+   choose his certificates blind (`docs/protocol.md` section 5). The code is a short authentication
+   string, so 36 bits is a documented exception to the 128 bits ASVS V11.4.3 asks of a hash; the
+   commitment is what makes it enough.
 5. **Media flows before the safety-code answer, by design.** The call starts as soon as the
    connection is up, so a person in the middle could be heard for the first seconds before anyone
    answers "No".

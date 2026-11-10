@@ -297,6 +297,12 @@ server removes the connection from its room first, so the other person gets `pee
 - Versioning: every message has `"v": 1`. Other values are rejected. Any breaking change to
   message shapes bumps `v`; any change to the encryption layout (AAD, key derivation) uses a new
   AAD label instead of `.../v1`.
+- The encrypted payload (section 5) is not seen by the server and changes with the web app: both
+  people run the same build, served by the same host. A change to its shape (like the required
+  `fingerprintCommitment` in the `hello`) fails closed between an old and a new build: someone who
+  kept a tab open from before a deploy sees "The connection could not be verified" until one of
+  them reloads. That is safe (nothing falls back to the old shape), but it is a false alarm, so such changes
+  are rare.
 
 ## 9. Test vectors
 

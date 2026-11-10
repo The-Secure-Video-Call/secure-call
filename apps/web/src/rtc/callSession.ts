@@ -3,9 +3,10 @@ import { startPerfectNegotiation, type NegotiablePeerConnection } from '@/rtc/pe
 import { createReconnectScheduler } from '@/rtc/reconnect';
 import { fromBase64Url, toBase64Url } from '@/crypto/base64url';
 import {
-  doesSdpMatchFingerprintCommitment,
   isWellFormedFingerprintCommitment,
+  readCommittedFingerprint,
 } from '@/crypto/fingerprintCommitment';
+import { readFingerprintFromSdp, SafetyCodeError } from '@/crypto/safetyCode';
 import { createSessionId, decideSenderRoles, SESSION_ID_BYTES } from '@/crypto/signalEncryption';
 import { prepareLocalCertificate, type LocalCertificate } from '@/rtc/localCertificate';
 import {
@@ -68,13 +69,16 @@ type PeerConnectionState = {
   localSessionId: Uint8Array;
   /** Null until the other side's hello has arrived. */
   peerSessionId: Uint8Array | null;
-  /** Of our own certificate's fingerprint, sent in our hello. */
+  /** Our own certificate's fingerprint (normalised), and its commitment sent in our hello. */
+  localFingerprint: string;
   localFingerprintCommitment: string;
   /**
    * From the other side's hello; null until it has arrived. Every offer and answer of the other
    * side must carry exactly the committed fingerprint, or the call ends.
    */
   peerFingerprintCommitment: string | null;
+  /** The other side's fingerprint, once one of its descriptions has passed the commitment check. */
+  committedRemoteFingerprint: string | null;
   nextOutgoingSequenceNumber: number;
   nextIncomingSequenceNumber: number;
   /** Messages are encrypted, sent, decrypted and handled strictly one after the other. */
@@ -122,7 +126,8 @@ export type CallSession = {
   replaceLocalVideoTrack(newVideoTrack: MediaStreamTrack): Promise<void>;
   /**
    * The SDP of both descriptions of the current connection, for the safety code; null if there
-   * is no connection or negotiation has not set both. Never log or send the returned values.
+   * is no connection or negotiation has not set both. If they do not show exactly the committed
+   * fingerprints, the call ends and null is returned. Never log or send the returned values.
    */
   readSessionDescriptionSdps(): { localSdp: string; remoteSdp: string } | null;
   /**
@@ -355,16 +360,13 @@ export function startCallSession(sessionOptions: {
         // seeing both real ones and make the safety codes match (issue #94).
         if (signalPayload.kind === 'offer' || signalPayload.kind === 'answer') {
           const peerFingerprintCommitment = connection.peerFingerprintCommitment;
-          if (
-            peerFingerprintCommitment === null ||
-            !(await doesSdpMatchFingerprintCommitment(
-              signalPayload.data.sdp,
-              peerFingerprintCommitment,
-            ))
-          ) {
-            return failVerification();
-          }
+          const committedRemoteFingerprint =
+            peerFingerprintCommitment === null
+              ? null
+              : await readCommittedFingerprint(signalPayload.data.sdp, peerFingerprintCommitment);
+          if (committedRemoteFingerprint === null) return failVerification();
           if (current !== connection || hasEnded) return;
+          connection.committedRemoteFingerprint = committedRemoteFingerprint;
         }
         void connection.negotiation.handleRemotePayload(signalPayload);
       }
@@ -405,12 +407,21 @@ export function startCallSession(sessionOptions: {
       (localCertificate) => {
         if (pendingOpening !== opening || hasEnded) return;
         pendingOpening = null;
-        const connection = createConnection(
-          isPolite,
-          settings,
-          sendOnlyRelayCandidates,
-          localCertificate,
-        );
+        let connection: PeerConnectionState;
+        try {
+          connection = createConnection(
+            isPolite,
+            settings,
+            sendOnlyRelayCandidates,
+            localCertificate,
+          );
+        } catch (creationError) {
+          // For example a certificate or ICE server the browser refuses: no hello, so end now.
+          events.onSessionProblem(creationError);
+          endSession('message-not-sent');
+          signalingClient?.leaveAndClose();
+          return;
+        }
         for (const queuedSignal of opening.queuedSignals) {
           receiveSignal(connection, queuedSignal.payload, queuedSignal.iv);
         }
@@ -451,8 +462,10 @@ export function startCallSession(sessionOptions: {
       iceRestartWatch: watchIceConnectionForRestart({ peerConnection }),
       localSessionId: createSessionId(),
       peerSessionId: null,
+      localFingerprint: localCertificate.fingerprint,
       localFingerprintCommitment: localCertificate.fingerprintCommitment,
       peerFingerprintCommitment: null,
+      committedRemoteFingerprint: null,
       nextOutgoingSequenceNumber: 0,
       nextIncomingSequenceNumber: 0,
       outgoingWork: Promise.resolve(),
@@ -588,13 +601,40 @@ export function startCallSession(sessionOptions: {
 
   connectAndJoin();
 
+  /**
+   * Whether the descriptions the connection uses (which the browser rebuilds from what was applied)
+   * still show exactly the committed fingerprints: ours, and the other side's that passed the
+   * check. So the safety code is made from the committed pair, even if the browser's SDP parser
+   * reads a fingerprint differently from ours.
+   */
+  function showsCommittedFingerprints(
+    connection: PeerConnectionState,
+    localSdp: string,
+    remoteSdp: string,
+  ): boolean {
+    try {
+      return (
+        readFingerprintFromSdp(localSdp) === connection.localFingerprint &&
+        readFingerprintFromSdp(remoteSdp) === connection.committedRemoteFingerprint
+      );
+    } catch (readError) {
+      if (readError instanceof SafetyCodeError) return false;
+      throw readError;
+    }
+  }
+
   return {
     readSessionDescriptionSdps() {
       // The "current" descriptions are the ones the connection is really using; a pending offer
       // that is not agreed yet must not feed the safety code.
-      const localDescription = current?.peerConnection.currentLocalDescription;
-      const remoteDescription = current?.peerConnection.currentRemoteDescription;
-      if (!localDescription || !remoteDescription) return null;
+      const connection = current;
+      const localDescription = connection?.peerConnection.currentLocalDescription;
+      const remoteDescription = connection?.peerConnection.currentRemoteDescription;
+      if (!connection || !localDescription || !remoteDescription) return null;
+      if (!showsCommittedFingerprints(connection, localDescription.sdp, remoteDescription.sdp)) {
+        failVerification(); // any other fingerprint ends the call: no code is shown for it
+        return null;
+      }
       return { localSdp: localDescription.sdp, remoteSdp: remoteDescription.sdp };
     },
     async readConnectionStats() {
