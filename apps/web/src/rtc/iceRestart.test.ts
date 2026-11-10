@@ -61,6 +61,15 @@ describe('ICE restart', () => {
     expect(peerConnection.restartIce).toHaveBeenCalledTimes(1);
   });
 
+  it('negative: stops restarting a dead path after 5 tries, until it connects again', () => {
+    const { peerConnection, changeIceState } = createFixture();
+    for (let i = 0; i < 20; i += 1) changeIceState('failed');
+    expect(peerConnection.restartIce).toHaveBeenCalledTimes(5);
+    changeIceState('connected');
+    changeIceState('failed');
+    expect(peerConnection.restartIce).toHaveBeenCalledTimes(6);
+  });
+
   it('tries a restart when the browser comes back online', () => {
     const { peerConnection, onlineListeners } = createFixture();
     for (const listener of onlineListeners) listener();

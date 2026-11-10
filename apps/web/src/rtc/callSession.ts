@@ -414,7 +414,11 @@ export function startCallSession(sessionOptions: {
 
   const reconnectScheduler = createReconnectScheduler({
     attemptReconnect: connectAndJoin,
-    giveUp: () => endSession('reconnect-failed'),
+    giveUp: () => {
+      // End first, then close any attempt that is still connecting or already joined.
+      endSession('reconnect-failed');
+      signalingClient?.leaveAndClose();
+    },
   });
 
   connectAndJoin();

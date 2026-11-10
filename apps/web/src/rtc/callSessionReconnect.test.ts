@@ -229,6 +229,14 @@ describe('call session: signaling reconnect', () => {
     expect(connectToSignaling).toHaveBeenCalledTimes(attemptsAtEnd);
   });
 
+  it('giving up closes an attempt that is still open', async () => {
+    const startedSession = await startConnectedSession();
+    await dropSocketAndReconnect(startedSession);
+    await vi.advanceTimersByTimeAsync(RECONNECT_WINDOW_MILLISECONDS);
+    expect(startedSession.sessionEvents.onSessionEnded).toHaveBeenCalledWith('reconnect-failed');
+    expect(startedSession.signalingClients[1]!.leaveAndClose).toHaveBeenCalled();
+  });
+
   it('a successful retry after room-full rejoins', async () => {
     const startedSession = await startConnectedSession();
     const { signalingClients, sessionEvents, connectToSignaling } = startedSession;

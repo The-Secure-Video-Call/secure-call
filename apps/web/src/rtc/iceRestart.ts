@@ -1,6 +1,9 @@
 /** How long ICE may stay `disconnected` before we restart it (short blips often heal alone). */
 export const ICE_DISCONNECTED_GRACE_PERIOD_MILLISECONDS = 5_000;
 
+/** Restarts in a row without ever reaching `connected` again before we stop trying. */
+export const MAX_ICE_RESTARTS_WITHOUT_CONNECTING = 5;
+
 export type IceRestartablePeerConnection = Pick<
   RTCPeerConnection,
   'iceConnectionState' | 'restartIce' | 'oniceconnectionstatechange'
@@ -34,13 +37,21 @@ export function watchIceConnectionForRestart(watchOptions: {
     disconnectedTimer = null;
   }
 
+  let restartsSinceLastConnected = 0;
+
   function restartIce(): void {
     clearDisconnectedTimer();
-    if (!isStopped) peerConnection.restartIce();
+    // A dead path would otherwise restart (and send an offer) in an endless loop.
+    if (isStopped || restartsSinceLastConnected >= MAX_ICE_RESTARTS_WITHOUT_CONNECTING) return;
+    restartsSinceLastConnected += 1;
+    peerConnection.restartIce();
   }
 
   peerConnection.oniceconnectionstatechange = () => {
     const iceConnectionState = peerConnection.iceConnectionState;
+    if (iceConnectionState === 'connected' || iceConnectionState === 'completed') {
+      restartsSinceLastConnected = 0;
+    }
     if (iceConnectionState === 'failed') restartIce();
     else if (iceConnectionState === 'disconnected') {
       if (disconnectedTimer === null) {
