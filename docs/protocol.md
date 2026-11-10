@@ -223,8 +223,13 @@ It also ends (as `message-verification-failed`) when the peer says `hello` but n
 answer follows within 10 seconds (the side that did not start the negotiation may receive only an
 answer), and when more than 64 received messages are waiting to be handled. The 10 second timer
 starts when the `hello` is accepted and stops when an offer or answer passes the fingerprint check,
-or when the connection closes or the call ends. It does not wait for the connection to come up:
-there is no connect timeout yet.
+or when the connection closes or the call ends. It does not wait for the connection to come up;
+a second timer does: if the peer connection has not reached `connected` 30 seconds after the
+`hello` is accepted, the call also ends as `message-verification-failed`. It starts once per
+connection and is cleared on `connected`, when the connection closes, on hang-up and on reconnect;
+an ICE restart of a connection that was connected does not start it again. A remote description
+that fails to apply is only reported; the connect timeout bounds such a peer. The connect timeout
+reuses the `message-verification-failed` reason, so the page shows the same warning for it.
 
 ## 6. Safety code
 
