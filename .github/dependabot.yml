@@ -1,10 +1,16 @@
 version: 2
 updates:
+  # Both wait 7 days after a release before proposing it: a compromised release is usually
+  # found and pulled within days, and every version here is pinned exactly.
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

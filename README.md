@@ -8,13 +8,33 @@ See [PLAN.md](PLAN.md) for the architecture and security design.
 
 ## Run locally
 
-Requirements: Node.js 22+ and [pnpm](https://pnpm.io) 10+.
+Requirements: Node.js 22+ (CI and the deploy use the exact version in `.node-version`) and
+[pnpm](https://pnpm.io) 10+.
 
 ```sh
 pnpm install
 pnpm --filter @secure-call/web dev   # web app on http://localhost:5173
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
 ```
+
+CI also runs these, and the deploy runs the audits too:
+
+```sh
+node scripts/check-pinned-actions.mjs          # every GitHub Action pinned to a commit SHA
+node --test 'scripts/*.test.mjs'               # tests for that check
+pnpm audit --prod --audit-level moderate       # production dependencies: moderate or worse fails
+pnpm audit --audit-level high                  # dev tooling too: high or worse fails
+```
+
+Dependencies are pinned to exact versions (`.npmrc` has `save-exact=true`), and Dependabot
+proposes updates for them and for the pinned Actions every week, 7 days after a release. Node
+in `.node-version` is bumped by hand. The pin check accepts one form only,
+`uses: owner/repo@<40-character SHA> # vX.Y.Z` on its own line; flow style and other YAML forms
+are reported, not read.
+
+`package.json` overrides `minimatch` to 11.x for GHSA-g3hv-75wg-m249 (every 10.x is affected;
+it reaches only eslint tooling). Remove the override once eslint and typescript-eslint accept
+`minimatch` 11.0.1 or later, and bump it by hand until then.
 
 ## Layout
 

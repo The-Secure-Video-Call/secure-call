@@ -18,19 +18,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # Every action pinned to a full commit SHA (a tag can be moved). Node standard library
+      # only, so it runs on the runner's own Node before anything is installed.
+      - name: Actions are pinned
+        run: node scripts/check-pinned-actions.mjs
+
       # pnpm version comes from "packageManager" in package.json.
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: pnpm
 
+      # Known vulnerabilities, from the lockfile alone, so before anything is downloaded.
+      # Production dependencies run in people's browsers: moderate or worse fails. Dev
+      # dependencies (eslint, vitest, and vite, which builds the bundle) run only here and in
+      # the deploy: high or worse fails.
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level moderate
+      - name: Audit all dependencies
+        run: pnpm audit --audit-level high
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Tests for the CI scripts
+        run: node --test 'scripts/*.test.mjs'
       - run: pnpm build
