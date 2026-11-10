@@ -360,7 +360,10 @@ jobs:
             echo "or rebuild the commit yourself and compare (SECURITY.md)."
           } > release-notes.md
           # --verify-tag: the tag made above must still exist; never let gh create one elsewhere.
-          gh release create "$tag" SHA256SUMS --verify-tag --title "Web app $tag" --notes-file release-notes.md
+          # --target: without it GitHub records the default branch's name as the release's commit.
+          gh release create "$tag" SHA256SUMS --verify-tag --target "$COMMIT" --title "Web app $tag" --notes-file release-notes.md
           tag_target="$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha')"
           [ "$tag_target" = "commit $COMMIT" ] || { echo "The tag $tag does not point at $COMMIT."; exit 1; }
+          release_target="$(gh api "repos/$GH_REPO/releases/tags/$tag" --jq '.target_commitish')"
+          [ "$release_target" = "$COMMIT" ] || { echo "The release $tag records $release_target, not $COMMIT."; exit 1; }
           echo "Published $tag."

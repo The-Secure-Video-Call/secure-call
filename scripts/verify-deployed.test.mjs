@@ -434,12 +434,20 @@ test('negative: a release whose metadata names another commit than its tag fails
     fakeWorld({ release: { target_commitish: OTHER_COMMIT } }),
     /names another commit/,
   );
-  await expectFailure(fakeWorld({ release: { target_commitish: 'main' } }), /names another commit/);
+});
+
+test('the commit comes from the tag: a release recording just "main" as its target passes', async () => {
+  // What GitHub stores when a release is made on an existing tag without --target.
+  const { exitCode, output } = await run(fakeWorld({ release: { target_commitish: 'main' } }));
+  assert.equal(exitCode, 0, output);
+  assert.match(output, /Release web-aaaaaaaaaaaa \(commit a{40}\)/);
 });
 
 test('negative: a tag that points at another commit (or is annotated) fails', async () => {
   for (const tagReference of [
     { ref: `refs/tags/${TAG}`, object: { type: 'commit', sha: OTHER_COMMIT } },
+    { ref: `refs/tags/${TAG}`, object: { type: 'commit', sha: 'aaaaaaaaaaaa' } },
+    { ref: `refs/tags/${TAG}` },
     { ref: `refs/tags/${TAG}`, object: { type: 'tag', sha: COMMIT } },
     { ref: 'refs/tags/web-aaaaaaaaaaaa-other', object: { type: 'commit', sha: COMMIT } },
     [{ ref: `refs/tags/${TAG}`, object: { type: 'commit', sha: COMMIT } }],

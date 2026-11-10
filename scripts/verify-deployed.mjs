@@ -248,9 +248,10 @@ async function fetchGitHubApi(fetchFunction, path) {
 }
 
 /**
- * The release to check: the named one, or the newest web-<commit> release. Its tag must name
- * its commit, and the tag itself must point at that commit (release metadata alone could say
- * anything), so the SHA256SUMS, the commit and the .htaccess read from it belong together.
+ * The release to check: the named one, or the newest web-<commit> release. Its commit is the one
+ * its tag points at (the release's own target_commitish is metadata that can say anything, or
+ * just "main"), and the tag's name must start that commit, so the SHA256SUMS, the commit and the
+ * .htaccess read from it belong together.
  */
 async function findRelease(fetchFunction, requestedTag) {
   const answer = await fetchGitHubApi(
@@ -265,17 +266,19 @@ async function findRelease(fetchFunction, requestedTag) {
   const tag = release.tag_name;
   if (requestedTag && tag !== requestedTag)
     throw new Error(`asked for ${requestedTag}, got ${tag}`);
-  const commit = release.target_commitish;
-  if (!COMMIT_PATTERN.test(commit) || !commit.startsWith(tag.slice('web-'.length)))
-    throw new Error(`${tag} names another commit: ${JSON.stringify(commit)}`);
-
   const tagReference = await fetchGitHubApi(fetchFunction, `git/ref/tags/${tag}`);
+  const commit = tagReference?.object?.sha;
   if (
     tagReference?.ref !== `refs/tags/${tag}` ||
     tagReference.object?.type !== 'commit' ||
-    tagReference.object.sha !== commit
+    !COMMIT_PATTERN.test(commit ?? '') ||
+    !commit.startsWith(tag.slice('web-'.length))
   )
-    throw new Error(`the tag ${tag} does not point at ${commit}`);
+    throw new Error(`the tag ${tag} does not point at a commit starting ${tag.slice(4)}`);
+  // A release whose metadata names a different commit than its tag is inconsistent: refuse it.
+  const recordedCommit = release.target_commitish;
+  if (COMMIT_PATTERN.test(recordedCommit ?? '') && recordedCommit !== commit)
+    throw new Error(`${tag} names another commit: ${JSON.stringify(recordedCommit)}`);
 
   const checksumsAssets = release.assets.filter((asset) => asset.name === 'SHA256SUMS');
   const checksumsUrl = `https://github.com/${REPOSITORY}/releases/download/${tag}/SHA256SUMS`;
@@ -293,7 +296,7 @@ async function checkCommitIsOnMain(fetchFunction, commit) {
   const mainCommit = mainReference?.object?.sha;
   if (
     mainReference?.ref !== 'refs/heads/main' ||
-    mainReference.object.type !== 'commit' ||
+    mainReference.object?.type !== 'commit' ||
     !COMMIT_PATTERN.test(mainCommit ?? '')
   )
     throw new Error('could not read the main branch');
