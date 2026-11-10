@@ -28,6 +28,7 @@ export type CallPeerConnection = NegotiablePeerConnection &
     | 'connectionState'
     | 'currentLocalDescription'
     | 'currentRemoteDescription'
+    | 'getStats'
     | 'ontrack'
     | 'onsignalingstatechange'
     | 'onconnectionstatechange'
@@ -96,6 +97,11 @@ export type CallSession = {
    * is no connection or negotiation has not set both. Never log or send the returned values.
    */
   readSessionDescriptionSdps(): { localSdp: string; remoteSdp: string } | null;
+  /**
+   * The raw getStats() report of the current connection, or null if there is none. It contains
+   * IP addresses: only feed it to the quality calculation, never log, store or show it.
+   */
+  readConnectionStats(): Promise<RTCStatsReport | null>;
 };
 
 /**
@@ -366,6 +372,14 @@ export function startCallSession(sessionOptions: {
       const remoteDescription = current?.peerConnection.currentRemoteDescription;
       if (!localDescription || !remoteDescription) return null;
       return { localSdp: localDescription.sdp, remoteSdp: remoteDescription.sdp };
+    },
+    async readConnectionStats() {
+      if (hasEnded || !current) return null;
+      try {
+        return await current.peerConnection.getStats();
+      } catch {
+        return null;
+      }
     },
     async replaceLocalVideoTrack(newVideoTrack) {
       const videoSenders = (current?.peerConnection.getSenders() ?? []).filter(
