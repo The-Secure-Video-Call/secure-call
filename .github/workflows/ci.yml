@@ -118,3 +118,78 @@ jobs:
             apps/web/test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+  # The same commit must build to byte-identical files, which is what lets anyone rebuild a
+  # release and compare it with its published SHA256SUMS (deploy-web.yml, SECURITY.md). Two
+  # clean builds that share nothing (no cache, no store): Linux with the deploy build's
+  # environment, and macOS (another OS, CPU and native build binaries) at a longer path, in
+  # another time zone and locale, with almost no environment, as the deploy's rebuild runs.
+  # Both use SOURCE_DATE_EPOCH from the commit; every file of dist/ must match.
+  reproducible-build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            folder: first
+          - runner: macos-15
+            folder: second/in/a/longer/path
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: ${{ matrix.folder }}
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: ${{ matrix.folder }}/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ${{ matrix.folder }}/.node-version
+      - name: Build as the deploy's build job does
+        if: runner.os == 'Linux'
+        working-directory: ${{ matrix.folder }}
+        run: |
+          pnpm install --frozen-lockfile
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" pnpm build
+      - name: Build as the deploy's rebuild job does
+        if: runner.os == 'macOS'
+        working-directory: ${{ matrix.folder }}
+        run: |
+          commit_time="$(git log -1 --format=%ct)"
+          umask 077
+          env -i PATH="$PATH" HOME="$HOME" LANG=C TZ=Pacific/Auckland pnpm install --frozen-lockfile
+          env -i PATH="$PATH" HOME="$HOME" LANG=C TZ=Pacific/Auckland SOURCE_DATE_EPOCH="$commit_time" pnpm build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducible-build-${{ runner.os }}
+          path: ${{ matrix.folder }}/apps/web/dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  reproducible-build-compare:
+    needs: reproducible-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: reproducible-build-Linux
+          path: linux
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: reproducible-build-macOS
+          path: macos
+      - name: Both builds are byte-identical
+        run: |
+          (cd linux && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > linux.sums
+          (cd macos && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > macos.sums
+          cat linux.sums
+          grep -q '  ./index.html$' linux.sums || { echo "no index.html was built"; exit 1; }
+          if diff linux.sums macos.sums; then
+            echo "Reproducible: the Linux and macOS builds are byte-identical."
+          else
+            echo "NOT reproducible: the two builds differ (see above)."
+            exit 1
+          fi
