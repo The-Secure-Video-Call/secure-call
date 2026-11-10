@@ -229,7 +229,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 - [x] Lobby page: "New call" button generates a link; camera/mic preview; device picker
 - [x] Call page: local and remote video, mute, camera on/off, hang up
 - [x] WebRTC with the "perfect negotiation" pattern (handles both sides offering at once)
-- [x] Public STUN for now
+- [x] STUN from our own coturn (`stun:turn.securevideocall.com:3478`)
 
 **Demo:** two browser tabs on the same machine have a video call.
 

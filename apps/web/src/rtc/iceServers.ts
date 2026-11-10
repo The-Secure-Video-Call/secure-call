@@ -1,27 +1,26 @@
 import type { TurnCredentials } from '@protocol/index';
 
 /**
- * TODO(M3): these third-party servers see the user's IP address; replace with our own coturn
- * once it is deployed.
+ * Our own coturn answers STUN on the same host and port as TURN. No third party (Google,
+ * Cloudflare, ...) may see a user's IP address through ICE.
  */
-export const PUBLIC_STUN_ICE_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun.cloudflare.com:3478' },
+export const OWN_STUN_ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:turn.securevideocall.com:3478' },
 ];
 
 /**
- * The ICE servers for a peer connection: the server's TURN (when it sent credentials) plus the
- * public STUN servers. The result holds the TURN secret: never log, display or store it.
+ * The ICE servers for a peer connection: the server's TURN (when it sent credentials) plus our
+ * own STUN server. The result holds the TURN secret: never log, display or store it.
  */
 export function buildIceServers(turnCredentials: TurnCredentials | undefined): RTCIceServer[] {
-  if (turnCredentials === undefined) return [...PUBLIC_STUN_ICE_SERVERS];
+  if (turnCredentials === undefined) return [...OWN_STUN_ICE_SERVERS];
   return [
     {
       urls: [...turnCredentials.urls],
       username: turnCredentials.username,
       credential: turnCredentials.credential,
     },
-    ...PUBLIC_STUN_ICE_SERVERS,
+    ...OWN_STUN_ICE_SERVERS,
   ];
 }
 
@@ -32,9 +31,9 @@ export type PeerConnectionSettings = {
 };
 
 /**
- * The settings for new peer connections. Without privacy mode: TURN (if any) plus public STUN,
+ * The settings for new peer connections. Without privacy mode: TURN (if any) plus our own STUN,
  * all candidates. With privacy mode: ONLY our TURN server and `iceTransportPolicy: 'relay'` (no
- * STUN either, as a third-party STUN server would see the IP). Returns null when privacy mode is
+ * STUN either). Returns null when privacy mode is
  * on but there is no usable TURN server: the caller must not connect, and must never fall back to
  * a direct connection.
  */
