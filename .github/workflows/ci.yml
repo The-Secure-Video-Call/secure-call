@@ -34,13 +34,15 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
-      # Known vulnerabilities: production dependencies reach people's browsers, so any moderate
-      # or worse fails; dev tooling never ships, so only high or critical fails.
+      # Known vulnerabilities, from the lockfile alone, so before anything is downloaded.
+      # Production dependencies run in people's browsers: moderate or worse fails. Dev
+      # dependencies (eslint, vitest, and vite, which builds the bundle) run only here and in
+      # the deploy: high or worse fails.
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level moderate
       - name: Audit all dependencies
         run: pnpm audit --audit-level high
+      - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
