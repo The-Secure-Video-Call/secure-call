@@ -266,7 +266,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 - [ ] Domain + VPS (any provider; 2 vCPU / 2 GB RAM is plenty to start; TURN bandwidth is the main cost)
 - [ ] `docker compose up` brings up Caddy (static site + TLS), signaling, and coturn
 - [ ] Open firewall: 443/tcp, 3478/udp+tcp, 5349/tcp, plus the TURN relay UDP port range
-- [ ] Health check endpoint and uptime monitoring (no personal data in metrics)
+- [x] Health check endpoint and uptime monitoring (no personal data in metrics): `.github/workflows/uptime.yml`
 - [ ] Deploy workflow from GitHub Actions on tagged releases
 
 **Demo:** public URL; call a friend on another network.

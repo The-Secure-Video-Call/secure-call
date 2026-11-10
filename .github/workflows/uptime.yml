@@ -1,0 +1,43 @@
+# Uptime monitoring (PLAN.md M5, issue #74): every 10 minutes GitHub's own runners, outside the
+# home network, fetch the site and the signaling server's health check. When either fails three
+# times in a row, an issue "Uptime: securevideocall.com is down" is opened (which notifies the
+# repository's watchers); when both answer again, that issue is closed.
+#
+# No personal data: the checks only read two public URLs, and the issue says which URL failed and
+# when, nothing else. Nothing runs on the Pis. The logic lives in scripts/check-uptime.sh.
+#
+# Limits: GitHub may start scheduled runs late under load, and it pauses schedules in a public
+# repository after 60 days without activity (any push re-enables them).
+name: Uptime
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write # open and close the downtime issue only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/check-uptime.sh
+          sparse-checkout-cone-mode: false
+      - name: Check the site and the signaling server
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/check-uptime.sh
