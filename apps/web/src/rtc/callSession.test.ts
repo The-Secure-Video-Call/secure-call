@@ -11,7 +11,7 @@ import {
 import { deriveSignalKey } from '@/crypto/signalKey';
 import { startCallSession, type CallPeerConnection } from '@/rtc/callSession';
 import type { LocalCertificate } from '@/rtc/localCertificate';
-import { buildIceServers, PUBLIC_STUN_ICE_SERVERS } from '@/rtc/iceServers';
+import { buildIceServers, OWN_STUN_ICE_SERVERS } from '@/rtc/iceServers';
 import { decryptSignalPayload, encryptSignalPayload } from '@/rtc/signalPayloadCodec';
 import type { SignalingClientEvents } from '@/signaling/signalingClient';
 import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
@@ -765,7 +765,7 @@ describe('call session: encrypted signaling fails closed', () => {
       const { server, iceServersUsed } = await startSession();
       server().onJoined('second');
       await flushOpening();
-      expect(iceServersUsed).toEqual([PUBLIC_STUN_ICE_SERVERS]);
+      expect(iceServersUsed).toEqual([OWN_STUN_ICE_SERVERS]);
     });
 
     it('the person who gets peer-joined uses the credentials from their own joined', async () => {

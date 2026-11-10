@@ -646,6 +646,7 @@ fingerprint)`.
     model documents it.
   - **Fix:** use our own coturn for STUN (`stun:turn.securevideocall.com:3478`), remove
     `PUBLIC_STUN_ICE_SERVERS`, and update `docs/threat-model.md`.
+  - **Status:** fixed in #95. The only STUN server is now our own coturn (`OWN_STUN_ICE_SERVERS`).
 - **V14.2.4: the "no IP logging" rule stops at the apps.** Nginx Proxy Manager logs every client's
   IP address and connection time by default, and the static host and its CDN keep their own access
   logs.
