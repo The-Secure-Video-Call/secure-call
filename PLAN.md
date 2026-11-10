@@ -91,7 +91,7 @@ A web app is only as trustworthy as the JavaScript the server sends. If someone 
 - Check the WebSocket `Origin` header and reject other origins.
 - Validate every message against a schema (zod). Max message size 64 KB. Drop unknown message types.
 - Rate limits: room joins per IP per minute, messages per connection per second.
-- Short-lived TURN credentials (TURN REST API: HMAC with a shared secret, valid for ~1 h) instead of a static username and password.
+- Short-lived TURN credentials (TURN REST API: HMAC with a shared secret, valid for as long as a room can live, 4 h, so a credential never expires mid-call) instead of a static username and password.
 - No request logging of IPs or room IDs beyond in-memory rate-limit counters. Log levels default to `warn`.
 - Security headers: `Strict-Transport-Security`, `Content-Security-Policy`, `Permissions-Policy: camera=(self), microphone=(self)`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `Cross-Origin-Opener-Policy: same-origin`.
 
