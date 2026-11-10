@@ -10,7 +10,11 @@ import {
 } from '@/rtc/signalPayloadCodec';
 import { buildPeerConnectionSettings, type PeerConnectionSettings } from '@/rtc/iceServers';
 import { connectToSignalingServer, type SignalingClient } from '@/signaling/signalingClient';
-import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
+import type {
+  SignalPayload,
+  SignalPayloadWithoutSequenceNumber,
+  TurnCredentials,
+} from '@protocol/index';
 
 /** The part of RTCPeerConnection the call session uses; tests pass a mock. */
 export type CallPeerConnection = NegotiablePeerConnection &
@@ -163,6 +167,27 @@ export function startCallSession(sessionOptions: {
    */
   let peerConnectionSettings: PeerConnectionSettings | null = null;
   let isPrivacyModeOnForThisJoin = false;
+  /** From the latest `joined`; a peer who rejoins gets a new connection without a new `joined`. */
+  let latestTurnCredentials: TurnCredentials | undefined;
+
+  /**
+   * Reads the privacy mode switch and builds the settings for the NEXT peer connection. Called
+   * before every new peer connection, so none can be created in direct mode while privacy mode is
+   * on. Privacy mode without a relay ends the session (no peer connection, no silent retry, no
+   * direct fallback): the person can turn it off and join again. Returns false then.
+   */
+  function refreshPeerConnectionSettings(): boolean {
+    isPrivacyModeOnForThisJoin = readIsPrivacyModeOn();
+    peerConnectionSettings = buildPeerConnectionSettings(
+      latestTurnCredentials,
+      isPrivacyModeOnForThisJoin,
+    );
+    if (peerConnectionSettings !== null) return true;
+    // End first, then close the socket.
+    endSession('privacy-mode-needs-relay');
+    signalingClient?.leaveAndClose();
+    return false;
+  }
 
   /** AAD fields for messages WE send to the peer; null for a hello. */
   function buildOutgoingAadContext(
@@ -305,9 +330,8 @@ export function startCallSession(sessionOptions: {
 
   function openPeerConnection(isPolite: boolean): void {
     closePeerConnection();
-    // Without settings (privacy mode but no relay) `onJoined` has already ended the session; check
-    // again so that no code path can ever create a direct connection by accident.
-    if (peerConnectionSettings === null) return;
+    // Decided again for every peer connection, also when the other person rejoins.
+    if (!refreshPeerConnectionSettings() || peerConnectionSettings === null) return;
     const peerConnection = createPeerConnection(
       peerConnectionSettings.iceServers,
       peerConnectionSettings.iceTransportPolicy,
@@ -372,18 +396,8 @@ export function startCallSession(sessionOptions: {
         onJoined(role, turnCredentials) {
           if (!isCurrentClient()) return;
           // Every join brings its own TURN credentials (or none), so a reconnect uses fresh ones.
-          isPrivacyModeOnForThisJoin = readIsPrivacyModeOn();
-          peerConnectionSettings = buildPeerConnectionSettings(
-            turnCredentials,
-            isPrivacyModeOnForThisJoin,
-          );
-          if (peerConnectionSettings === null) {
-            // No peer connection, no silent retry, no direct fallback: the person can turn
-            // privacy mode off and join again. (End first, then close the socket.)
-            endSession('privacy-mode-needs-relay');
-            signalingClient?.leaveAndClose();
-            return;
-          }
+          latestTurnCredentials = turnCredentials;
+          if (!refreshPeerConnectionSettings()) return;
           hasJoinedBefore = true;
           if (reconnectScheduler.isActive) {
             reconnectScheduler.stop();

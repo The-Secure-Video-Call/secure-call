@@ -748,13 +748,31 @@ describe('call session: encrypted signaling fails closed', () => {
         );
       });
 
-      it('is read again at every join, so a change applies from the next join', async () => {
+      it('is read again for every new peer connection, also when the other person rejoins', async () => {
         let isPrivacyModeOn = false;
         const startedSession = await startSession(undefined, () => isPrivacyModeOn);
         startedSession.server().onJoined('first', turnCredentials);
-        isPrivacyModeOn = true; // changed mid-call: this connection stays as it is
         startedSession.server().onPeerJoined();
+        isPrivacyModeOn = true; // changed mid-call: this connection stays as it is
         expect(startedSession.iceTransportPoliciesUsed).toEqual(['all']);
+        startedSession.server().onPeerLeft();
+        startedSession.server().onPeerJoined(); // next connection honours it, using the TURN kept
+        expect(startedSession.iceTransportPoliciesUsed).toEqual(['all', 'relay']);
+        expect(startedSession.sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+      });
+
+      it('a rejoining peer after privacy mode was turned on, without turn, ends the call', async () => {
+        let isPrivacyModeOn = false;
+        const startedSession = await startSession(undefined, () => isPrivacyModeOn);
+        startedSession.server().onJoined('first'); // no turn
+        startedSession.server().onPeerJoined();
+        isPrivacyModeOn = true;
+        startedSession.server().onPeerLeft();
+        startedSession.server().onPeerJoined();
+        expect(startedSession.peerConnections).toHaveLength(1);
+        expect(startedSession.sessionEvents.onSessionEnded).toHaveBeenCalledWith(
+          'privacy-mode-needs-relay',
+        );
       });
     });
 

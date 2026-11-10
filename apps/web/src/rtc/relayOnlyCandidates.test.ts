@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isRelayCandidateText, removeNonRelayCandidateLines } from '@/rtc/relayOnlyCandidates';
+import {
+  isRelayCandidateText,
+  redactRelatedAddress,
+  removeNonRelayCandidateLines,
+} from '@/rtc/relayOnlyCandidates';
 
 const HOST = 'candidate:1 1 udp 2122260223 192.168.1.5 50000 typ host generation 0';
 const SRFLX =
@@ -21,7 +25,25 @@ describe('isRelayCandidateText', () => {
   });
 });
 
+describe('redactRelatedAddress', () => {
+  it('hides a real related address and port of a relay candidate', () => {
+    expect(
+      redactRelatedAddress(
+        'candidate:3 1 udp 1 198.51.100.7 6 typ relay raddr 192.168.1.5 rport 5',
+      ),
+    ).toBe('candidate:3 1 udp 1 198.51.100.7 6 typ relay raddr 0.0.0.0 rport 0');
+  });
+});
+
 describe('removeNonRelayCandidateLines', () => {
+  it('also hides the related address in kept relay lines', () => {
+    expect(
+      removeNonRelayCandidateLines(
+        'a=candidate:3 1 udp 1 1.2.3.4 6 typ relay raddr 10.0.0.2 rport 9',
+      ),
+    ).toBe('a=candidate:3 1 udp 1 1.2.3.4 6 typ relay raddr 0.0.0.0 rport 0');
+  });
+
   it('keeps relay candidates and all other lines, drops host and srflx', () => {
     const sdp = [
       'v=0',

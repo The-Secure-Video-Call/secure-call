@@ -1,4 +1,8 @@
-import { isRelayCandidateText, removeNonRelayCandidateLines } from '@/rtc/relayOnlyCandidates';
+import {
+  isRelayCandidateText,
+  redactRelatedAddress,
+  removeNonRelayCandidateLines,
+} from '@/rtc/relayOnlyCandidates';
 import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
 
 /** The part of RTCPeerConnection the negotiation uses; tests pass a mock. */
@@ -80,7 +84,9 @@ export function startPerfectNegotiation(negotiationOptions: {
     sendPayload({
       kind: 'candidate',
       data: {
-        candidate: iceCandidate.candidate,
+        candidate: sendOnlyRelayCandidates
+          ? redactRelatedAddress(iceCandidate.candidate)
+          : iceCandidate.candidate,
         sdpMid: iceCandidate.sdpMid,
         sdpMLineIndex: iceCandidate.sdpMLineIndex,
         usernameFragment: iceCandidate.usernameFragment,
