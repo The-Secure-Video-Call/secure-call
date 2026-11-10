@@ -131,6 +131,9 @@ function checkContentSecurityPolicy(cspText: string): string[] {
 
 function checkStrictTransportSecurity(headerValue: string): string[] {
   const problems: string[] = [];
+  if ((headerValue.match(/max-age=/gi) ?? []).length > 1) {
+    problems.push('Strict-Transport-Security: max-age appears more than once');
+  }
   const maxAgeSeconds = Number(/max-age=(\d+)/i.exec(headerValue)?.[1] ?? 0);
   if (maxAgeSeconds < 31536000) problems.push('Strict-Transport-Security: max-age is under a year');
   if (!/(^|;)\s*includeSubDomains\s*(;|$)/i.test(headerValue)) {
@@ -152,7 +155,10 @@ function checkPermissionsPolicy(headerValue: string): string[] {
   const featureAllowlists = new Map<string, string>();
   for (const entry of headerValue.split(',')) {
     const [featureName, allowlist] = entry.trim().split('=');
-    if (!featureName || allowlist === undefined) continue;
+    if (!featureName || allowlist === undefined) {
+      problems.push(`Permissions-Policy: cannot read entry "${entry.trim()}"`);
+      continue;
+    }
     featureAllowlists.set(featureName.trim().toLowerCase(), allowlist.trim().toLowerCase());
   }
   for (const [featureName, allowlist] of featureAllowlists) {

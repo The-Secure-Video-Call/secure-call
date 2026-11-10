@@ -108,6 +108,24 @@ describe('checkIndexHtml', () => {
     expect(problems.join()).toMatch(/not in the build output/);
   });
 
+  it('does not let <!--> hide a script from the check', async () => {
+    const html = buildHtml({ extraHead: '<!--> <script>alert(1)</script> -->' });
+    expect((await checkIndexHtml(html, readBuiltFile)).join()).toMatch(/inline <script>/);
+  });
+
+  it('rejects meta refresh, preconnect, base and a obfuscated javascript: address', async () => {
+    const extraHeads = [
+      '<meta http-equiv="refresh" content="0;url=https://x.example">',
+      '<link rel="preconnect" href="https://x.example">',
+      '<base href="https://x.example/">',
+      '<a href="java\tscript:alert(1)">x</a>',
+    ];
+    for (const extraHead of extraHeads) {
+      const problems = await checkIndexHtml(buildHtml({ extraHead }), readBuiltFile);
+      expect(problems.length, extraHead).toBeGreaterThan(0);
+    }
+  });
+
   it('ignores markup inside HTML comments', async () => {
     const html = buildHtml({ extraHead: '<!-- <script>alert(1)</script> -->' });
     expect(await checkIndexHtml(html, readBuiltFile)).toEqual([]);

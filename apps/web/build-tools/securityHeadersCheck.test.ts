@@ -114,6 +114,16 @@ describe('checkSecurityHeaders', () => {
     ).toContain('camera');
   });
 
+  it('rejects a repeated HSTS max-age', () => {
+    const problems = checkSecurityHeaders(
+      htaccessWithLineChanged(
+        'Header always set Strict-Transport-Security',
+        'Header always set Strict-Transport-Security "max-age=31536000; max-age=0; includeSubDomains"',
+      ),
+    );
+    expect(problems.join()).toContain('more than once');
+  });
+
   it('rejects a conditional, non-always, nested or later-unset header', () => {
     const referrerLine = 'Header always set Referrer-Policy "no-referrer"';
     expect(

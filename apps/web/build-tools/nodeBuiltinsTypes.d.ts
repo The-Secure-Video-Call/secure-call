@@ -4,6 +4,7 @@
 
 declare module 'node:fs' {
   export function existsSync(path: string | URL): boolean;
+  export function statSync(path: string): { isFile(): boolean };
   export function readFileSync(path: string | URL): Uint8Array;
   export function readFileSync(path: string | URL, encoding: 'utf8'): string;
   export function writeFileSync(path: string, content: string | Uint8Array): void;

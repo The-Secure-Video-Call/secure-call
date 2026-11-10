@@ -3,6 +3,7 @@
 import {
   findStartTags,
   isIntegrityProtectedTag,
+  readLinkRelations,
   readResourceUrl,
   toBuildFilePath,
 } from './htmlResourceTags.ts';
@@ -12,6 +13,8 @@ import {
 } from './subresourceIntegrityHash.ts';
 import type { BuiltFileReader } from './subresourceIntegrityPlugin.ts';
 
+const FORBIDDEN_TAG_NAMES = ['base', 'iframe', 'frame', 'frameset', 'form', 'object', 'embed'];
+const FORBIDDEN_LINK_RELATIONS = ['prefetch', 'preconnect', 'dns-prefetch', 'prerender'];
 const STRONG_ALGORITHMS: IntegrityAlgorithm[] = ['sha384', 'sha512'];
 
 async function checkIntegrityAttribute(
@@ -43,6 +46,16 @@ export async function checkIndexHtml(
   const problems: string[] = [];
   for (const startTag of findStartTags(html)) {
     if (startTag.tagName === 'style') problems.push('inline <style> element');
+    if (FORBIDDEN_TAG_NAMES.includes(startTag.tagName)) {
+      problems.push(`<${startTag.tagName}> is not allowed in index.html`);
+    }
+    if (startTag.attributes.has('http-equiv')) problems.push('http-equiv is not allowed');
+    if (
+      startTag.tagName === 'link' &&
+      readLinkRelations(startTag).some((relation) => FORBIDDEN_LINK_RELATIONS.includes(relation))
+    ) {
+      problems.push(`<link rel="${startTag.attributes.get('rel')}"> contacts another host`);
+    }
     if (startTag.tagName === 'script' && !startTag.attributes.has('src')) {
       problems.push('inline <script> (no src)');
     }
@@ -52,7 +65,10 @@ export async function checkIndexHtml(
       }
       if (attributeName === 'style')
         problems.push(`inline style attribute on <${startTag.tagName}>`);
-      if (/^\s*(javascript|data|vbscript):/i.test(attributeValue) && attributeName !== 'src') {
+      // Browsers drop control characters, spaces, tabs and newlines inside a URL scheme.
+      // eslint-disable-next-line no-control-regex -- the control characters are the point
+      const normalizedValue = attributeValue.replace(/[\u0000- ]/g, '');
+      if (/^(javascript|data|vbscript):/i.test(normalizedValue) && attributeName !== 'src') {
         problems.push(`"${attributeName}" on <${startTag.tagName}> starts with a script address`);
       }
     }

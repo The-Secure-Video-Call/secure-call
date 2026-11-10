@@ -20,7 +20,8 @@ export type HtmlStartTag = {
 
 const START_TAG_PATTERN = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
 const ATTRIBUTE_PATTERN = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
-const COMMENT_PATTERN = /<!--[\s\S]*?-->/g;
+// HTML5 ends a comment at the first `-->`, and `<!-->` and `<!--->` are complete empty comments.
+const COMMENT_PATTERN = /<!--(?:-?>|[\s\S]*?-->)/g;
 
 /** Replaces HTML comments with spaces of the same length, so indexes stay valid. */
 function blankOutComments(html: string): string {

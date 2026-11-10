@@ -1,5 +1,5 @@
 // Runs both build checks on a build folder (dist/): index.html and .htaccess.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { checkIndexHtml } from './indexHtmlCheck.ts';
 import { checkSecurityHeaders } from './securityHeadersCheck.ts';
@@ -17,7 +17,8 @@ export async function checkBuildOutput(buildFolderPath: string): Promise<string[
   const readBuiltFile = (buildFilePath: string): Uint8Array | undefined => {
     const absoluteFilePath = resolve(absoluteBuildFolder, buildFilePath);
     if (!absoluteFilePath.startsWith(absoluteBuildFolder + sep)) return undefined;
-    return existsSync(absoluteFilePath) ? readFileSync(absoluteFilePath) : undefined;
+    const isFile = existsSync(absoluteFilePath) && statSync(absoluteFilePath).isFile();
+    return isFile ? readFileSync(absoluteFilePath) : undefined;
   };
 
   const indexHtmlProblems = await checkIndexHtml(
