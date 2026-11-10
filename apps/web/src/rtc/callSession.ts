@@ -84,6 +84,13 @@ type PeerConnectionState = {
   /** Messages are encrypted, sent, decrypted and handled strictly one after the other. */
   outgoingWork: Promise<void>;
   incomingWork: Promise<void>;
+  /** Incoming messages queued in `incomingWork` or being handled; capped (see below). */
+  waitingIncomingMessageCount: number;
+  /**
+   * Runs from the peer's accepted hello until its first offer or answer is accepted; null before
+   * and after that. When it fires the call ends.
+   */
+  stallTimeoutId: ReturnType<typeof setTimeout> | null;
 };
 
 export type CallSessionEvents = {
@@ -149,6 +156,21 @@ let lastPeerConnectionNumber = 0;
  * ours is sent only once the connection exists.
  */
 const MAX_SIGNALS_WHILE_OPENING = 1;
+
+/**
+ * How long the peer may stay silent after we accept its `hello`. Within this time an offer OR an
+ * answer must arrive (the impolite side may receive only an answer, so waiting for an offer alone
+ * would end real calls); else the call ends. Generous for slow networks, short enough that a peer
+ * who holds the link cannot keep us waiting (threat-model limit 7).
+ */
+export const PEER_STALL_TIMEOUT_MILLISECONDS = 10_000;
+
+/**
+ * Most incoming messages that may wait to be handled (or be in handling) at once. A real call
+ * has only a handful at a time (they are handled as they arrive), so more means a flood: the call
+ * ends instead of queueing without limit (threat-model limit 7).
+ */
+export const MAX_WAITING_INCOMING_MESSAGES = 64;
 
 /**
  * Joins the room and runs one call: signaling client + one RTCPeerConnection at a time, using
@@ -312,6 +334,10 @@ export function startCallSession(sessionOptions: {
     }
     connection.peerSessionId = peerSessionId;
     connection.peerFingerprintCommitment = peerFingerprintCommitment;
+    connection.stallTimeoutId = setTimeout(() => {
+      connection.stallTimeoutId = null;
+      if (current === connection) failVerification();
+    }, PEER_STALL_TIMEOUT_MILLISECONDS);
     // Only now, with both IDs known, may anything else be sent: adding tracks starts negotiation.
     for (const localTrack of localMediaStream.getTracks()) {
       connection.peerConnection.addTrack(localTrack, localMediaStream);
@@ -324,62 +350,86 @@ export function startCallSession(sessionOptions: {
     payload: string,
     initializationVector: string | null,
   ) {
+    if (connection.waitingIncomingMessageCount >= MAX_WAITING_INCOMING_MESSAGES) {
+      return failVerification(); // a flood: end the call rather than queue without limit
+    }
+    connection.waitingIncomingMessageCount += 1;
     connection.incomingWork = connection.incomingWork.then(async () => {
-      if (current !== connection || hasEnded) return;
-      const expectedSequenceNumber = connection.nextIncomingSequenceNumber;
-      const peerSessionId = connection.peerSessionId;
-      let aadContext: SignalAadContext = null;
-      if (peerSessionId !== null) {
-        const senderRoles = decideSenderRoles(connection.localSessionId, peerSessionId);
-        if (senderRoles === null) return failVerification();
-        aadContext = {
-          senderRole: senderRoles.otherRole,
-          senderSessionId: peerSessionId,
-          receiverSessionId: connection.localSessionId,
-        };
+      try {
+        await handleIncomingSignal(connection, payload, initializationVector);
+      } finally {
+        connection.waitingIncomingMessageCount -= 1;
       }
-      const signalPayload = await decryptSignalPayload({
-        signalKey,
-        payload,
-        iv: initializationVector,
-        expectedSequenceNumber,
-        aadContext,
-      });
-      // The peer may have changed while we were decrypting: that message belongs to the old one.
-      if (current !== connection || hasEnded) return;
-      if (signalPayload === null) return failVerification();
-      if (peerSessionId === null) {
-        if (!acceptHello(connection, signalPayload)) return failVerification();
-      } else if (signalPayload.kind === 'hello') {
-        return failVerification();
-      } else if (signalPayload.kind === 'bye') {
-        closePeerConnection();
-      } else {
-        // An offer or answer must carry exactly the fingerprint the other side committed to in its
-        // hello, before it is applied: else someone in the middle could pick his certificate after
-        // seeing both real ones and make the safety codes match (issue #94).
-        if (signalPayload.kind === 'offer' || signalPayload.kind === 'answer') {
-          const peerFingerprintCommitment = connection.peerFingerprintCommitment;
-          const committedRemoteFingerprint =
-            peerFingerprintCommitment === null
-              ? null
-              : await readCommittedFingerprint(signalPayload.data.sdp, peerFingerprintCommitment);
-          if (committedRemoteFingerprint === null) return failVerification();
-          if (current !== connection || hasEnded) return;
-          connection.committedRemoteFingerprint = committedRemoteFingerprint;
-        }
-        void connection.negotiation.handleRemotePayload(signalPayload);
-      }
-      connection.nextIncomingSequenceNumber = expectedSequenceNumber + 1;
     });
     // If handling a message throws, the queue must not stall silently: end the call.
     connection.incomingWork = connection.incomingWork.catch(() => failVerification());
+  }
+
+  async function handleIncomingSignal(
+    connection: PeerConnectionState,
+    payload: string,
+    initializationVector: string | null,
+  ): Promise<void> {
+    if (current !== connection || hasEnded) return;
+    const expectedSequenceNumber = connection.nextIncomingSequenceNumber;
+    const peerSessionId = connection.peerSessionId;
+    let aadContext: SignalAadContext = null;
+    if (peerSessionId !== null) {
+      const senderRoles = decideSenderRoles(connection.localSessionId, peerSessionId);
+      if (senderRoles === null) return failVerification();
+      aadContext = {
+        senderRole: senderRoles.otherRole,
+        senderSessionId: peerSessionId,
+        receiverSessionId: connection.localSessionId,
+      };
+    }
+    const signalPayload = await decryptSignalPayload({
+      signalKey,
+      payload,
+      iv: initializationVector,
+      expectedSequenceNumber,
+      aadContext,
+    });
+    // The peer may have changed while we were decrypting: that message belongs to the old one.
+    if (current !== connection || hasEnded) return;
+    if (signalPayload === null) return failVerification();
+    if (peerSessionId === null) {
+      if (!acceptHello(connection, signalPayload)) return failVerification();
+    } else if (signalPayload.kind === 'hello') {
+      return failVerification();
+    } else if (signalPayload.kind === 'bye') {
+      closePeerConnection();
+    } else {
+      // An offer or answer must carry exactly the fingerprint the other side committed to in its
+      // hello, before it is applied: else someone in the middle could pick his certificate after
+      // seeing both real ones and make the safety codes match (issue #94).
+      if (signalPayload.kind === 'offer' || signalPayload.kind === 'answer') {
+        const peerFingerprintCommitment = connection.peerFingerprintCommitment;
+        const committedRemoteFingerprint =
+          peerFingerprintCommitment === null
+            ? null
+            : await readCommittedFingerprint(signalPayload.data.sdp, peerFingerprintCommitment);
+        if (committedRemoteFingerprint === null) return failVerification();
+        if (current !== connection || hasEnded) return;
+        connection.committedRemoteFingerprint = committedRemoteFingerprint;
+        clearStallTimeout(connection); // the peer went on after its hello
+      }
+      void connection.negotiation.handleRemotePayload(signalPayload);
+    }
+    connection.nextIncomingSequenceNumber = expectedSequenceNumber + 1;
+  }
+
+  function clearStallTimeout(connection: PeerConnectionState): void {
+    if (connection.stallTimeoutId === null) return;
+    clearTimeout(connection.stallTimeoutId);
+    connection.stallTimeoutId = null;
   }
 
   function closePeerConnection(): void {
     pendingOpening = null; // a connection still being opened is cancelled too
     if (current === null) return;
     const { peerConnection, negotiation, iceRestartWatch } = current;
+    clearStallTimeout(current);
     current = null;
     negotiation.stop();
     iceRestartWatch.stop();
@@ -470,6 +520,8 @@ export function startCallSession(sessionOptions: {
       nextIncomingSequenceNumber: 0,
       outgoingWork: Promise.resolve(),
       incomingWork: Promise.resolve(),
+      waitingIncomingMessageCount: 0,
+      stallTimeoutId: null,
     };
     current = connection;
     lastPeerConnectionNumber += 1;
