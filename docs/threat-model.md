@@ -63,10 +63,22 @@ servers can see and 3.4 for the web app trust problem); the exact wire format an
 
 ### 5. The other person learning your IP address
 
-- **Defence:** planned for M3: our own TURN server and a "privacy mode" that relays media so the
-  other person sees only the relay.
-- **Not covered today:** with a direct WebRTC connection, the other person (and the STUN servers,
-  which are third-party public ones for now: see `PUBLIC_STUN_ICE_SERVERS`) can learn your IP address.
+- **Defence:** the **privacy mode** switch (lobby and call page, off by default, remembered in
+  `localStorage`). When it is on, every peer connection (the first one, every reconnect and its
+  ICE restarts) is created with `iceTransportPolicy: "relay"` and only our TURN server (no
+  third-party STUN), and a second layer never sends a local candidate whose type is not `relay`
+  (neither as a candidate message nor inside an offer or answer). If the server sends no TURN
+  server, the app creates no peer connection, says so, and never falls back to a direct
+  connection. Changing the switch during a call applies from the next call or reconnect.
+- **What it does not do:**
+  - It hides only **your** IP address. The other person decides for themselves: if they have
+    privacy mode off, your browser can still learn their IP address.
+  - Our relay still sees **both** IP addresses (PLAN.md section 3), plus timing and traffic
+    volume. It cannot see the content.
+  - It may use more data and add a little delay.
+- **Not covered with privacy mode off:** with a direct WebRTC connection, the other person (and the
+  STUN servers, which are third-party public ones for now: see `PUBLIC_STUN_ICE_SERVERS`) can learn
+  your IP address.
 
 ## Not covered (known limits)
 

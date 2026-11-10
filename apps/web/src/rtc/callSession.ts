@@ -8,7 +8,7 @@ import {
   encryptSignalPayload,
   type SignalAadContext,
 } from '@/rtc/signalPayloadCodec';
-import { buildIceServers } from '@/rtc/iceServers';
+import { buildPeerConnectionSettings, type PeerConnectionSettings } from '@/rtc/iceServers';
 import { connectToSignalingServer, type SignalingClient } from '@/signaling/signalingClient';
 import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
 
@@ -43,7 +43,9 @@ export type CallSessionEndedReason =
   /** A signaling message failed decryption or the checks on it: someone may be interfering. */
   | 'message-verification-failed'
   /** Our own hello, offer or answer could not be sent (for example, too large). */
-  | 'message-not-sent';
+  | 'message-not-sent'
+  /** Privacy mode is on but the server sent no TURN relay: we never connect directly instead. */
+  | 'privacy-mode-needs-relay';
 
 /** Everything that belongs to one peer connection, including its encrypted-signaling state. */
 type PeerConnectionState = {
@@ -130,14 +132,24 @@ export function startCallSession(sessionOptions: {
   signalingUrl: string;
   localMediaStream: MediaStream;
   events: CallSessionEvents;
+  /**
+   * Asked at every join (first and repeated): is privacy mode on right now? A change therefore
+   * takes effect on the next call or reconnect, never in the middle of a connection.
+   */
+  readIsPrivacyModeOn?: () => boolean;
   /** Receives the ICE servers (with TURN credentials, if any): never log or store them. */
-  createPeerConnection?: (iceServers: RTCIceServer[]) => CallPeerConnection;
+  createPeerConnection?: (
+    iceServers: RTCIceServer[],
+    iceTransportPolicy: RTCIceTransportPolicy,
+  ) => CallPeerConnection;
   connectToSignaling?: typeof connectToSignalingServer;
 }): CallSession {
   const { roomId, signalKey, signalingUrl, localMediaStream, events } = sessionOptions;
   const createPeerConnection =
     sessionOptions.createPeerConnection ??
-    ((iceServers: RTCIceServer[]) => new RTCPeerConnection({ iceServers }));
+    ((iceServers: RTCIceServer[], iceTransportPolicy: RTCIceTransportPolicy) =>
+      new RTCPeerConnection({ iceServers, iceTransportPolicy }));
+  const readIsPrivacyModeOn = sessionOptions.readIsPrivacyModeOn ?? (() => false);
   const connectToSignaling = sessionOptions.connectToSignaling ?? connectToSignalingServer;
   let signalingClient: SignalingClient | null = null;
   /** Events of an earlier signaling client (a dropped or discarded one) must be ignored. */
@@ -145,8 +157,12 @@ export function startCallSession(sessionOptions: {
   let hasJoinedBefore = false;
   let hasEnded = false;
   let current: PeerConnectionState | null = null;
-  /** From our own `joined`, kept in memory only; used for every connection of this session. */
-  let iceServers: RTCIceServer[] = buildIceServers(undefined);
+  /**
+   * From our own `joined` and the privacy mode choice at that moment; kept in memory only. Every
+   * peer connection of this join uses it, and a reconnect decides again. Null: do not connect.
+   */
+  let peerConnectionSettings: PeerConnectionSettings | null = null;
+  let isPrivacyModeOnForThisJoin = false;
 
   /** AAD fields for messages WE send to the peer; null for a hello. */
   function buildOutgoingAadContext(
@@ -289,13 +305,20 @@ export function startCallSession(sessionOptions: {
 
   function openPeerConnection(isPolite: boolean): void {
     closePeerConnection();
-    const peerConnection = createPeerConnection(iceServers);
+    // Without settings (privacy mode but no relay) `onJoined` has already ended the session; check
+    // again so that no code path can ever create a direct connection by accident.
+    if (peerConnectionSettings === null) return;
+    const peerConnection = createPeerConnection(
+      peerConnectionSettings.iceServers,
+      peerConnectionSettings.iceTransportPolicy,
+    );
     const negotiation = startPerfectNegotiation({
       peerConnection,
       isPolite,
       sendPayload: (payloadWithoutSequenceNumber) =>
         sendPayload(connection, payloadWithoutSequenceNumber),
       onNegotiationError: events.onSessionProblem,
+      sendOnlyRelayCandidates: isPrivacyModeOnForThisJoin,
     });
     const connection: PeerConnectionState = {
       peerConnection,
@@ -349,7 +372,18 @@ export function startCallSession(sessionOptions: {
         onJoined(role, turnCredentials) {
           if (!isCurrentClient()) return;
           // Every join brings its own TURN credentials (or none), so a reconnect uses fresh ones.
-          iceServers = buildIceServers(turnCredentials);
+          isPrivacyModeOnForThisJoin = readIsPrivacyModeOn();
+          peerConnectionSettings = buildPeerConnectionSettings(
+            turnCredentials,
+            isPrivacyModeOnForThisJoin,
+          );
+          if (peerConnectionSettings === null) {
+            // No peer connection, no silent retry, no direct fallback: the person can turn
+            // privacy mode off and join again. (End first, then close the socket.)
+            endSession('privacy-mode-needs-relay');
+            signalingClient?.leaveAndClose();
+            return;
+          }
           hasJoinedBefore = true;
           if (reconnectScheduler.isActive) {
             reconnectScheduler.stop();

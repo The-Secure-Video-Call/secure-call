@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_TITLE } from '@/appTitle';
 import { ConnectionQualityIndicator } from '@/components/ConnectionQualityIndicator';
+import { PrivacyModeSwitch } from '@/components/PrivacyModeSwitch';
 import { SafetyCodeCheck } from '@/components/SafetyCodeCheck';
 import type { FingerprintPair } from '@/crypto/safetyCode';
 import { tryPlayMediaElement } from '@/media/remoteAudioPlayback';
@@ -13,6 +14,7 @@ import {
 import type { CallSessionEndedReason } from '@/rtc/callSession';
 import { useCallSession } from '@/rtc/useCallSession';
 import { useConnectionQuality } from '@/rtc/useConnectionQuality';
+import { usePrivacyMode } from '@/rtc/usePrivacyMode';
 
 const ENDED_REASON_TEXT: Record<CallSessionEndedReason, string> = {
   'hung-up': 'The call ended.',
@@ -22,6 +24,8 @@ const ENDED_REASON_TEXT: Record<CallSessionEndedReason, string> = {
   'signaling-connection-lost': 'The connection to the server was lost.',
   'invalid-signaling-message': 'The server sent something unexpected, so the call was ended.',
   'message-not-sent': 'The call could not be set up on this device. Start a new call.',
+  'privacy-mode-needs-relay':
+    "Privacy mode needs our relay, which isn't available right now. Turn privacy mode off to call directly.",
   'message-verification-failed':
     'The connection could not be verified. Someone may be interfering. Start a new call.',
 };
@@ -46,6 +50,7 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     toggleCameraOff,
     stopLocalMedia,
   } = useLocalMediaStream();
+  const { isPrivacyModeOn, setIsPrivacyModeOn } = usePrivacyMode();
   const {
     remoteMediaStream,
     callConnectionStatus,
@@ -57,7 +62,7 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
     replaceLocalVideoTrack,
     readSessionDescriptionSdps,
     readConnectionStats,
-  } = useCallSession(props.roomSecret, localMediaStream);
+  } = useCallSession(props.roomSecret, localMediaStream, isPrivacyModeOn);
   const { canSwitchCameras, isSwitchingCamera, switchCameraErrorMessage, switchCamera } =
     useCameraSwitching(localMediaStream, replaceLocalVideoTrack, endedReason !== null);
   const [isTapToStartAudioShown, setIsTapToStartAudioShown] = useState(false);
@@ -151,6 +156,11 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
         <ConnectionQualityIndicator connectionQuality={connectionQuality} />
       )}
       {mediaErrorMessage !== null && <p role="alert">{mediaErrorMessage}</p>}
+      <PrivacyModeSwitch
+        isPrivacyModeOn={isPrivacyModeOn}
+        onChange={setIsPrivacyModeOn}
+        isChangeAppliedLater
+      />
       {switchCameraErrorMessage !== null && <p role="alert">{switchCameraErrorMessage}</p>}
       {didCodesMismatch && (
         <p role="alert" className="safety-code-mismatch">

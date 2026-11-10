@@ -39,7 +39,7 @@ function createMockPeerConnection() {
   };
 }
 
-async function startSession() {
+async function startSession(readIsPrivacyModeOn: () => boolean = () => false) {
   const signalKey = await deriveSignalKey(new Uint8Array(32).fill(9));
   const peerConnections: ReturnType<typeof createMockPeerConnection>[] = [];
   const signalingClients: {
@@ -72,6 +72,7 @@ async function startSession() {
     signalingUrl: 'ws://localhost:8000/ws/signal/',
     localMediaStream: { getTracks: () => [] } as unknown as MediaStream,
     events: sessionEvents,
+    readIsPrivacyModeOn,
     createPeerConnection: () => {
       const mockPeerConnection = createMockPeerConnection();
       peerConnections.push(mockPeerConnection);
@@ -135,6 +136,26 @@ async function dropSocketAndReconnect(startedSession: Awaited<ReturnType<typeof 
 describe('call session: signaling reconnect', () => {
   beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }));
   afterEach(() => vi.useRealTimers());
+
+  it('privacy mode: a reconnect whose joined has no turn ends the call and never connects directly', async () => {
+    const turnCredentials = {
+      urls: ['turn:turn.example.com:3478?transport=udp'],
+      username: '1700003600:AAECAwQFBgcICQoLDA0ODw',
+      credential: 'AAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    };
+    const startedSession = await startSession(() => true);
+    const { signalingClients, connectToSignaling, sessionEvents, peerConnections } = startedSession;
+    signalingClients[0]!.events.onJoined('second', turnCredentials);
+    expect(peerConnections).toHaveLength(1);
+    await dropSocketAndReconnect(startedSession);
+    expect(connectToSignaling).toHaveBeenCalledTimes(2);
+    signalingClients[1]!.events.onJoined('second'); // fresh join, but without turn
+    expect(peerConnections).toHaveLength(1);
+    expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('privacy-mode-needs-relay');
+    expect(signalingClients[1]!.leaveAndClose).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(connectToSignaling).toHaveBeenCalledTimes(2); // no silent retry
+  });
 
   it('a dropped socket closes the connection, reconnects after 1 s and rejoins the same room', async () => {
     const startedSession = await startConnectedSession();

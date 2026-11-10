@@ -140,6 +140,65 @@ describe('perfect negotiation', () => {
     });
   });
 
+  describe('sendOnlyRelayCandidates', () => {
+    function startRelayOnlyNegotiation() {
+      const mockPeerConnection = createMockPeerConnection();
+      const sendPayload = vi.fn();
+      startPerfectNegotiation({
+        peerConnection: mockPeerConnection as unknown as NegotiablePeerConnection,
+        isPolite: false,
+        sendPayload,
+        onNegotiationError: vi.fn(),
+        sendOnlyRelayCandidates: true,
+      });
+      return { mockPeerConnection, sendPayload };
+    }
+    const candidateEvent = (candidate: string) =>
+      ({
+        candidate: { candidate, sdpMid: '0', sdpMLineIndex: 0, usernameFragment: 'abcd' },
+      }) as RTCPeerConnectionIceEvent;
+
+    it('sends relay candidates but never host, srflx, prflx or unreadable ones', () => {
+      const { mockPeerConnection, sendPayload } = startRelayOnlyNegotiation();
+      for (const candidate of [
+        'candidate:1 1 udp 1 192.168.1.5 1 typ host',
+        'candidate:2 1 udp 1 203.0.113.9 1 typ srflx raddr 192.168.1.5 rport 1',
+        'candidate:3 1 udp 1 203.0.113.9 1 typ prflx',
+        'candidate:4',
+        'candidate:5 1 udp 1 198.51.100.7 1 typ relay',
+      ]) {
+        mockPeerConnection.onicecandidate?.(candidateEvent(candidate));
+      }
+      expect(sendPayload).toHaveBeenCalledTimes(1);
+      expect(sendPayload).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'candidate', data: expect.objectContaining({}) }),
+      );
+    });
+
+    it('removes host and srflx candidate lines from an offer and an answer', async () => {
+      const { mockPeerConnection, sendPayload } = startRelayOnlyNegotiation();
+      const sdpWithCandidates = [
+        'v=0',
+        'a=candidate:1 1 udp 1 192.168.1.5 1 typ host',
+        'a=candidate:5 1 udp 1 198.51.100.7 1 typ relay',
+      ].join('\r\n');
+      mockPeerConnection.setLocalDescription.mockImplementation(async () => {
+        mockPeerConnection.localDescription = {
+          type: 'offer',
+          sdp: sdpWithCandidates,
+        } as RTCSessionDescription;
+      });
+      await mockPeerConnection.onnegotiationneeded?.(new Event('negotiationneeded'));
+      expect(sendPayload).toHaveBeenCalledWith({
+        kind: 'offer',
+        data: {
+          type: 'offer',
+          sdp: ['v=0', 'a=candidate:5 1 udp 1 198.51.100.7 1 typ relay'].join('\r\n'),
+        },
+      });
+    });
+  });
+
   it('adds remote ICE candidates', async () => {
     const { mockPeerConnection, negotiation } = startNegotiation(false);
     await negotiation.handleRemotePayload({
