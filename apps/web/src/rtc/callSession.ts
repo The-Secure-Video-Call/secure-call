@@ -2,7 +2,13 @@ import { watchIceConnectionForRestart } from '@/rtc/iceRestart';
 import { startPerfectNegotiation, type NegotiablePeerConnection } from '@/rtc/perfectNegotiation';
 import { createReconnectScheduler } from '@/rtc/reconnect';
 import { fromBase64Url, toBase64Url } from '@/crypto/base64url';
+import {
+  isWellFormedFingerprintCommitment,
+  readCommittedFingerprint,
+} from '@/crypto/fingerprintCommitment';
+import { readFingerprintFromSdp, SafetyCodeError } from '@/crypto/safetyCode';
 import { createSessionId, decideSenderRoles, SESSION_ID_BYTES } from '@/crypto/signalEncryption';
+import { prepareLocalCertificate, type LocalCertificate } from '@/rtc/localCertificate';
 import {
   decryptSignalPayload,
   encryptSignalPayload,
@@ -46,7 +52,10 @@ export type CallSessionEndedReason =
   | 'invalid-signaling-message'
   /** A signaling message failed decryption or the checks on it: someone may be interfering. */
   | 'message-verification-failed'
-  /** Our own hello, offer or answer could not be sent (for example, too large). */
+  /**
+   * Our own hello, offer or answer could not be prepared or sent (for example, too large, or the
+   * certificate for the connection could not be made).
+   */
   | 'message-not-sent'
   /** Privacy mode is on but the server sent no TURN relay: we never connect directly instead. */
   | 'privacy-mode-needs-relay';
@@ -60,6 +69,16 @@ type PeerConnectionState = {
   localSessionId: Uint8Array;
   /** Null until the other side's hello has arrived. */
   peerSessionId: Uint8Array | null;
+  /** Our own certificate's fingerprint (normalised), and its commitment sent in our hello. */
+  localFingerprint: string;
+  localFingerprintCommitment: string;
+  /**
+   * From the other side's hello; null until it has arrived. Every offer and answer of the other
+   * side must carry exactly the committed fingerprint, or the call ends.
+   */
+  peerFingerprintCommitment: string | null;
+  /** The other side's fingerprint, once one of its descriptions has passed the commitment check. */
+  committedRemoteFingerprint: string | null;
   nextOutgoingSequenceNumber: number;
   nextIncomingSequenceNumber: number;
   /** Messages are encrypted, sent, decrypted and handled strictly one after the other. */
@@ -107,7 +126,8 @@ export type CallSession = {
   replaceLocalVideoTrack(newVideoTrack: MediaStreamTrack): Promise<void>;
   /**
    * The SDP of both descriptions of the current connection, for the safety code; null if there
-   * is no connection or negotiation has not set both. Never log or send the returned values.
+   * is no connection or negotiation has not set both. If they do not show exactly the committed
+   * fingerprints, the call ends and null is returned. Never log or send the returned values.
    */
   readSessionDescriptionSdps(): { localSdp: string; remoteSdp: string } | null;
   /**
@@ -122,6 +142,13 @@ export type CallSession = {
  * reused when a new session starts and a "verified" decision cannot carry over to it.
  */
 let lastPeerConnectionNumber = 0;
+
+/**
+ * Signals that may wait while the certificate for a new connection is being made. Only the other
+ * side's hello can legitimately arrive then: it sends nothing else until our hello reaches it, and
+ * ours is sent only once the connection exists.
+ */
+const MAX_SIGNALS_WHILE_OPENING = 1;
 
 /**
  * Joins the room and runs one call: signaling client + one RTCPeerConnection at a time, using
@@ -141,18 +168,29 @@ export function startCallSession(sessionOptions: {
    * takes effect on the next call or reconnect, never in the middle of a connection.
    */
   readIsPrivacyModeOn?: () => boolean;
-  /** Receives the ICE servers (with TURN credentials, if any): never log or store them. */
+  /**
+   * Receives the ICE servers (with TURN credentials, if any): never log or store them. The
+   * certificate is new for this connection and must be the only one it uses.
+   */
   createPeerConnection?: (
     iceServers: RTCIceServer[],
     iceTransportPolicy: RTCIceTransportPolicy,
+    certificate: RTCCertificate,
   ) => CallPeerConnection;
+  /** Makes the fresh certificate (and its commitment) for each new peer connection. */
+  prepareLocalCertificate?: () => Promise<LocalCertificate>;
   connectToSignaling?: typeof connectToSignalingServer;
 }): CallSession {
   const { roomId, signalKey, signalingUrl, localMediaStream, events } = sessionOptions;
   const createPeerConnection =
     sessionOptions.createPeerConnection ??
-    ((iceServers: RTCIceServer[], iceTransportPolicy: RTCIceTransportPolicy) =>
-      new RTCPeerConnection({ iceServers, iceTransportPolicy }));
+    ((
+      iceServers: RTCIceServer[],
+      iceTransportPolicy: RTCIceTransportPolicy,
+      certificate: RTCCertificate,
+    ) => new RTCPeerConnection({ iceServers, iceTransportPolicy, certificates: [certificate] }));
+  const prepareCertificate =
+    sessionOptions.prepareLocalCertificate ?? (() => prepareLocalCertificate());
   const readIsPrivacyModeOn = sessionOptions.readIsPrivacyModeOn ?? (() => false);
   const connectToSignaling = sessionOptions.connectToSignaling ?? connectToSignalingServer;
   let signalingClient: SignalingClient | null = null;
@@ -161,6 +199,12 @@ export function startCallSession(sessionOptions: {
   let hasJoinedBefore = false;
   let hasEnded = false;
   let current: PeerConnectionState | null = null;
+  /**
+   * While the certificate for the next connection is being made: the signals that arrived
+   * meanwhile (at most MAX_SIGNALS_WHILE_OPENING). Null when no connection is being opened;
+   * closing or replacing the connection cancels the opening.
+   */
+  let pendingOpening: { queuedSignals: { payload: string; iv: string | null }[] } | null = null;
   /**
    * From our own `joined` and the privacy mode choice at that moment; kept in memory only. Every
    * peer connection of this join uses it, and a reconnect decides again. Null: do not connect.
@@ -255,15 +299,19 @@ export function startCallSession(sessionOptions: {
   function acceptHello(connection: PeerConnectionState, signalPayload: SignalPayload): boolean {
     if (signalPayload.kind !== 'hello') return false;
     const peerSessionId = fromBase64Url(signalPayload.data.sessionId);
+    const peerFingerprintCommitment = signalPayload.data.fingerprintCommitment;
     if (
       peerSessionId === null ||
       peerSessionId.length !== SESSION_ID_BYTES ||
       toBase64Url(peerSessionId) !== signalPayload.data.sessionId ||
-      decideSenderRoles(connection.localSessionId, peerSessionId) === null
+      decideSenderRoles(connection.localSessionId, peerSessionId) === null ||
+      !isWellFormedFingerprintCommitment(peerFingerprintCommitment) ||
+      peerFingerprintCommitment === connection.localFingerprintCommitment
     ) {
       return false; // malformed, or equal to ours (our own hello reflected back)
     }
     connection.peerSessionId = peerSessionId;
+    connection.peerFingerprintCommitment = peerFingerprintCommitment;
     // Only now, with both IDs known, may anything else be sent: adding tracks starts negotiation.
     for (const localTrack of localMediaStream.getTracks()) {
       connection.peerConnection.addTrack(localTrack, localMediaStream);
@@ -307,6 +355,19 @@ export function startCallSession(sessionOptions: {
       } else if (signalPayload.kind === 'bye') {
         closePeerConnection();
       } else {
+        // An offer or answer must carry exactly the fingerprint the other side committed to in its
+        // hello, before it is applied: else someone in the middle could pick his certificate after
+        // seeing both real ones and make the safety codes match (issue #94).
+        if (signalPayload.kind === 'offer' || signalPayload.kind === 'answer') {
+          const peerFingerprintCommitment = connection.peerFingerprintCommitment;
+          const committedRemoteFingerprint =
+            peerFingerprintCommitment === null
+              ? null
+              : await readCommittedFingerprint(signalPayload.data.sdp, peerFingerprintCommitment);
+          if (committedRemoteFingerprint === null) return failVerification();
+          if (current !== connection || hasEnded) return;
+          connection.committedRemoteFingerprint = committedRemoteFingerprint;
+        }
         void connection.negotiation.handleRemotePayload(signalPayload);
       }
       connection.nextIncomingSequenceNumber = expectedSequenceNumber + 1;
@@ -316,6 +377,7 @@ export function startCallSession(sessionOptions: {
   }
 
   function closePeerConnection(): void {
+    pendingOpening = null; // a connection still being opened is cancelled too
     if (current === null) return;
     const { peerConnection, negotiation, iceRestartWatch } = current;
     current = null;
@@ -328,13 +390,63 @@ export function startCallSession(sessionOptions: {
     events.onRemoteMediaStream(null);
   }
 
+  /**
+   * Closes any connection, then makes a fresh certificate and opens the new connection with it.
+   * The signals that arrive meanwhile wait (see MAX_SIGNALS_WHILE_OPENING) and are handled once
+   * the connection exists. A close, a newer opening or the end of the session cancels it.
+   */
   function openPeerConnection(isPolite: boolean): void {
     closePeerConnection();
     // Decided again for every peer connection, also when the other person rejoins.
     if (!refreshPeerConnectionSettings() || peerConnectionSettings === null) return;
+    const settings = peerConnectionSettings;
+    const sendOnlyRelayCandidates = isPrivacyModeOnForThisJoin;
+    const opening: NonNullable<typeof pendingOpening> = { queuedSignals: [] };
+    pendingOpening = opening;
+    prepareCertificate().then(
+      (localCertificate) => {
+        if (pendingOpening !== opening || hasEnded) return;
+        pendingOpening = null;
+        let connection: PeerConnectionState;
+        try {
+          connection = createConnection(
+            isPolite,
+            settings,
+            sendOnlyRelayCandidates,
+            localCertificate,
+          );
+        } catch (creationError) {
+          // For example a certificate or ICE server the browser refuses: no hello, so end now.
+          events.onSessionProblem(creationError);
+          endSession('message-not-sent');
+          signalingClient?.leaveAndClose();
+          return;
+        }
+        for (const queuedSignal of opening.queuedSignals) {
+          receiveSignal(connection, queuedSignal.payload, queuedSignal.iv);
+        }
+      },
+      (certificateError: unknown) => {
+        if (pendingOpening !== opening || hasEnded) return;
+        pendingOpening = null;
+        events.onSessionProblem(certificateError);
+        // Without a certificate there can be no hello: say so, don't hang.
+        endSession('message-not-sent');
+        signalingClient?.leaveAndClose();
+      },
+    );
+  }
+
+  function createConnection(
+    isPolite: boolean,
+    settings: PeerConnectionSettings,
+    sendOnlyRelayCandidates: boolean,
+    localCertificate: LocalCertificate,
+  ): PeerConnectionState {
     const peerConnection = createPeerConnection(
-      peerConnectionSettings.iceServers,
-      peerConnectionSettings.iceTransportPolicy,
+      settings.iceServers,
+      settings.iceTransportPolicy,
+      localCertificate.certificate,
     );
     const negotiation = startPerfectNegotiation({
       peerConnection,
@@ -342,7 +454,7 @@ export function startCallSession(sessionOptions: {
       sendPayload: (payloadWithoutSequenceNumber) =>
         sendPayload(connection, payloadWithoutSequenceNumber),
       onNegotiationError: events.onSessionProblem,
-      sendOnlyRelayCandidates: isPrivacyModeOnForThisJoin,
+      sendOnlyRelayCandidates,
     });
     const connection: PeerConnectionState = {
       peerConnection,
@@ -350,6 +462,10 @@ export function startCallSession(sessionOptions: {
       iceRestartWatch: watchIceConnectionForRestart({ peerConnection }),
       localSessionId: createSessionId(),
       peerSessionId: null,
+      localFingerprint: localCertificate.fingerprint,
+      localFingerprintCommitment: localCertificate.fingerprintCommitment,
+      peerFingerprintCommitment: null,
+      committedRemoteFingerprint: null,
       nextOutgoingSequenceNumber: 0,
       nextIncomingSequenceNumber: 0,
       outgoingWork: Promise.resolve(),
@@ -369,11 +485,16 @@ export function startCallSession(sessionOptions: {
       if (peerConnection.signalingState === 'stable') events.onSessionDescriptionsMayHaveChanged();
     };
     // Nothing but our hello goes out until the peer's hello arrives; only then are the tracks
-    // added (`acceptHello`), which triggers `negotiationneeded` and sends the first offer.
+    // added (`acceptHello`), which triggers `negotiationneeded` and sends the first offer. So our
+    // fingerprint is committed before either side has seen the other's.
     sendPayload(connection, {
       kind: 'hello',
-      data: { sessionId: toBase64Url(connection.localSessionId) },
+      data: {
+        sessionId: toBase64Url(connection.localSessionId),
+        fingerprintCommitment: connection.localFingerprintCommitment,
+      },
     });
+    return connection;
   }
 
   function endSession(endedReason: CallSessionEndedReason): void {
@@ -416,8 +537,14 @@ export function startCallSession(sessionOptions: {
           if (!isCurrentClient()) return;
           // A signal while nobody is connected is never legitimate (the server relays in order,
           // and `peer-left` comes after the peer's last signal): treat it like any bad message.
-          if (current === null) failVerification();
-          else receiveSignal(current, payload, initializationVector);
+          // While a connection is being opened, the peer's hello waits for it.
+          if (current !== null) receiveSignal(current, payload, initializationVector);
+          else if (
+            pendingOpening !== null &&
+            pendingOpening.queuedSignals.length < MAX_SIGNALS_WHILE_OPENING
+          ) {
+            pendingOpening.queuedSignals.push({ payload, iv: initializationVector });
+          } else failVerification();
         },
         onServerError(errorCode) {
           if (!isCurrentClient()) return;
@@ -474,13 +601,40 @@ export function startCallSession(sessionOptions: {
 
   connectAndJoin();
 
+  /**
+   * Whether the descriptions the connection uses (which the browser rebuilds from what was applied)
+   * still show exactly the committed fingerprints: ours, and the other side's that passed the
+   * check. So the safety code is made from the committed pair, even if the browser's SDP parser
+   * reads a fingerprint differently from ours.
+   */
+  function showsCommittedFingerprints(
+    connection: PeerConnectionState,
+    localSdp: string,
+    remoteSdp: string,
+  ): boolean {
+    try {
+      return (
+        readFingerprintFromSdp(localSdp) === connection.localFingerprint &&
+        readFingerprintFromSdp(remoteSdp) === connection.committedRemoteFingerprint
+      );
+    } catch (readError) {
+      if (readError instanceof SafetyCodeError) return false;
+      throw readError;
+    }
+  }
+
   return {
     readSessionDescriptionSdps() {
       // The "current" descriptions are the ones the connection is really using; a pending offer
       // that is not agreed yet must not feed the safety code.
-      const localDescription = current?.peerConnection.currentLocalDescription;
-      const remoteDescription = current?.peerConnection.currentRemoteDescription;
-      if (!localDescription || !remoteDescription) return null;
+      const connection = current;
+      const localDescription = connection?.peerConnection.currentLocalDescription;
+      const remoteDescription = connection?.peerConnection.currentRemoteDescription;
+      if (!connection || !localDescription || !remoteDescription) return null;
+      if (!showsCommittedFingerprints(connection, localDescription.sdp, remoteDescription.sdp)) {
+        failVerification(); // any other fingerprint ends the call: no code is shown for it
+        return null;
+      }
       return { localSdp: localDescription.sdp, remoteSdp: remoteDescription.sdp };
     },
     async readConnectionStats() {

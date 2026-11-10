@@ -1,11 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toBase64Url } from '@/crypto/base64url';
+import { computeFingerprintCommitment } from '@/crypto/fingerprintCommitment';
 import { createSessionId } from '@/crypto/signalEncryption';
 import { deriveSignalKey } from '@/crypto/signalKey';
 import { startCallSession, type CallPeerConnection } from '@/rtc/callSession';
+import type { LocalCertificate } from '@/rtc/localCertificate';
 import { RECONNECT_WINDOW_MILLISECONDS } from '@/rtc/reconnect';
 import { decryptSignalPayload, encryptSignalPayload } from '@/rtc/signalPayloadCodec';
 import type { SignalingClientEvents } from '@/signaling/signalingClient';
+
+/** A normalised SHA-256 fingerprint with every byte set to `byteValue`. */
+function fakeFingerprint(byteValue: number): string {
+  const hexByte = byteValue.toString(16).padStart(2, '0').toUpperCase();
+  return `sha-256 ${Array.from({ length: 32 }, () => hexByte).join(':')}`;
+}
+
+// Computed once, so a fake certificate is ready one microtask after it is asked for.
+const PEER_FINGERPRINT_COMMITMENT = await computeFingerprintCommitment(fakeFingerprint(0xab));
+const LOCAL_CERTIFICATES: LocalCertificate[] = await Promise.all(
+  Array.from({ length: 16 }, async (_, certificateIndex) => ({
+    certificate: { fakeCertificateNumber: certificateIndex } as unknown as RTCCertificate,
+    fingerprint: fakeFingerprint(certificateIndex),
+    fingerprintCommitment: await computeFingerprintCommitment(fakeFingerprint(certificateIndex)),
+  })),
+);
 
 // Long enough for Web Crypto on a busy CI runner, well inside vitest's 5 s test timeout.
 const WAIT_UNTIL_LIMIT_MILLISECONDS = 3_000;
@@ -50,6 +68,7 @@ function createMockPeerConnection() {
 async function startSession(readIsPrivacyModeOn: () => boolean = () => false) {
   const signalKey = await deriveSignalKey(new Uint8Array(32).fill(9));
   const peerConnections: ReturnType<typeof createMockPeerConnection>[] = [];
+  let preparedCertificateCount = 0;
   const signalingClients: {
     events: SignalingClientEvents;
     sendSignal: ReturnType<typeof vi.fn<(payload: string, iv: string) => void>>;
@@ -86,6 +105,12 @@ async function startSession(readIsPrivacyModeOn: () => boolean = () => false) {
       peerConnections.push(mockPeerConnection);
       return mockPeerConnection as unknown as CallPeerConnection;
     },
+    prepareLocalCertificate: async () => {
+      const localCertificate = LOCAL_CERTIFICATES[preparedCertificateCount];
+      preparedCertificateCount += 1;
+      if (localCertificate === undefined) throw new Error('out of fake certificates');
+      return localCertificate;
+    },
     connectToSignaling: connectToSignaling as never,
   });
 
@@ -109,7 +134,10 @@ async function startSession(readIsPrivacyModeOn: () => boolean = () => false) {
       signalKey,
       signalPayload: {
         kind: 'hello',
-        data: { sessionId: toBase64Url(createSessionId()) },
+        data: {
+          sessionId: toBase64Url(createSessionId()),
+          fingerprintCommitment: PEER_FINGERPRINT_COMMITMENT,
+        },
         seq: 0,
       },
       aadContext: null,
@@ -154,7 +182,7 @@ describe('call session: signaling reconnect', () => {
     const startedSession = await startSession(() => true);
     const { signalingClients, connectToSignaling, sessionEvents, peerConnections } = startedSession;
     signalingClients[0]!.events.onJoined('second', turnCredentials);
-    expect(peerConnections).toHaveLength(1);
+    await waitUntil(() => peerConnections.length === 1);
     await dropSocketAndReconnect(startedSession);
     expect(connectToSignaling).toHaveBeenCalledTimes(2);
     signalingClients[1]!.events.onJoined('second'); // fresh join, but without turn
@@ -222,7 +250,14 @@ describe('call session: signaling reconnect', () => {
     const signalKey = await deriveSignalKey(new Uint8Array(32).fill(9));
     const recordedOldHello = await encryptSignalPayload({
       signalKey,
-      signalPayload: { kind: 'hello', data: { sessionId: toBase64Url(createSessionId()) }, seq: 3 },
+      signalPayload: {
+        kind: 'hello',
+        data: {
+          sessionId: toBase64Url(createSessionId()),
+          fingerprintCommitment: PEER_FINGERPRINT_COMMITMENT,
+        },
+        seq: 3,
+      },
       aadContext: null,
     });
     await dropSocketAndReconnect(startedSession);

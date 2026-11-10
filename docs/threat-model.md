@@ -96,13 +96,17 @@ This list is intentionally blunt.
 3. **Link leakage:** chat history, screenshots, screen shares and anyone shoulder-surfing the link.
 4. **The safety code only helps if people really compare it,** out loud or through another channel
    they trust, and compare all six symbols. If nobody compares, a man in the middle with the link goes
-   unnoticed.
+   unnoticed. When they do compare, his chance of matching codes is 2^-36 per attempt: both sides
+   commit to their DTLS fingerprints in the encrypted `hello` before any SDP is sent, so he has to
+   choose his certificates blind (`docs/protocol.md` section 5). The code is a short authentication
+   string, so 36 bits is a documented exception to the 128 bits ASVS V11.4.3 asks of a hash; the
+   commitment is what makes it enough.
 5. **Media flows before the safety-code answer, by design.** The call starts as soon as the
    connection is up, so a person in the middle could be heard for the first seconds before anyone
    answers "No".
-6. **A changed remote fingerprint is caught only after it is applied.** The app reads the
-   fingerprints from the descriptions the connection is already using. If a renegotiation brings a
-   different fingerprint, the call ends when the change has been applied, not before.
+6. **A changed remote fingerprint is refused before it is applied.** Every offer and answer must
+   carry the fingerprint the other side committed to in its `hello`; a renegotiation that brings a
+   different one ends the call before the description is used.
 7. **No timeout between `hello` and the first offer, and no cap on the incoming message queue yet.**
    A peer who holds the link can send a `hello` and then stall, or send many messages, to waste the
    other side's time or memory until the room expires.

@@ -29,7 +29,17 @@ const SIGNALING_URL_PATTERN = /\/ws\/signal\//;
 const LOCAL_SIGNALING_ORIGIN = 'ws://localhost:8000';
 
 type CallHistory = {
+  /** Call connections: the app always gives these ICE servers. */
   peerConnections: number;
+  /** Throwaway connections that read the fingerprint of a new certificate (no ICE servers). */
+  fingerprintProbes: number;
+  /**
+   * Every call connection had exactly one certificate, probed (its fingerprint read) before the
+   * connection was created, and never used by an earlier call connection.
+   */
+  certificatesProbedAndFresh: boolean;
+  /** A probe set a description, the one step that would make it gather candidates and send. */
+  probeSetADescription: boolean;
   remoteTracks: number;
   everConnected: boolean;
   remoteVideoFrames: boolean;
@@ -68,16 +78,44 @@ async function newPerson(browser: Browser, browserName: string, name: string): P
     });
     const history: CallHistory = {
       peerConnections: 0,
+      fingerprintProbes: 0,
+      certificatesProbedAndFresh: true,
+      probeSetADescription: false,
       remoteTracks: 0,
       everConnected: false,
       remoteVideoFrames: false,
     };
     (window as unknown as { callHistory: CallHistory }).callHistory = history;
     const NativePeerConnection = window.RTCPeerConnection;
+    const probedCertificates = new Set<RTCCertificate>();
+    const certificatesUsed = new Set<RTCCertificate>();
     window.RTCPeerConnection = class RecordedPeerConnection extends NativePeerConnection {
       constructor(configuration?: RTCConfiguration) {
         super(configuration);
+        if (configuration?.iceServers === undefined) {
+          history.fingerprintProbes += 1;
+          for (const probedCertificate of configuration?.certificates ?? []) {
+            probedCertificates.add(probedCertificate);
+          }
+          const setProbeLocalDescription = this.setLocalDescription.bind(this);
+          // One signature only (the method has overloads): the app never passes callbacks.
+          this.setLocalDescription = ((description?: RTCLocalSessionDescriptionInit) => {
+            history.probeSetADescription = true;
+            return setProbeLocalDescription(description);
+          }) as RTCPeerConnection['setLocalDescription'];
+          return;
+        }
         history.peerConnections += 1;
+        const [certificate, ...otherCertificates] = configuration.certificates ?? [];
+        if (
+          certificate === undefined ||
+          otherCertificates.length > 0 ||
+          !probedCertificates.has(certificate) ||
+          certificatesUsed.has(certificate)
+        ) {
+          history.certificatesProbedAndFresh = false;
+        }
+        if (certificate !== undefined) certificatesUsed.add(certificate);
         this.addEventListener('track', () => {
           history.remoteTracks += 1;
         });
@@ -279,9 +317,23 @@ test('@every-browser two people complete an encrypted call, verify it and hang u
     // The recorder saw the call happen (so its "never" in the tests below means something).
     const history = await readCallHistory(person);
     expect(history.peerConnections).toBe(1);
+    // Its certificate was made for it alone and probed first; the probe sent nothing.
+    expect(history.fingerprintProbes).toBe(1);
+    expect(history.certificatesProbedAndFresh).toBe(true);
+    expect(history.probeSetADescription).toBe(false);
     expect(history.everConnected).toBe(true);
     expect(history.remoteVideoFrames).toBe(true);
   }
+
+  // Bob reloads: Alice's side makes a new connection, which must get a new certificate (a man in
+  // the middle forcing a reconnect must not learn the next fingerprint from this one).
+  await bob.page.reload();
+  for (const person of [alice, bob]) await expect(callStatus(person)).toHaveText(CONNECTED_TEXT);
+  const aliceAfterRejoin = await readCallHistory(alice);
+  expect(aliceAfterRejoin.peerConnections).toBe(2);
+  expect(aliceAfterRejoin.fingerprintProbes).toBe(2);
+  expect(aliceAfterRejoin.certificatesProbedAndFresh).toBe(true);
+  expect(aliceAfterRejoin.probeSetADescription).toBe(false);
 
   await alice.page.getByRole('button', { name: 'Hang up' }).click();
   await expect(callStatus(bob)).toHaveText(OTHER_PERSON_LEFT_TEXT);

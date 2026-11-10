@@ -67,7 +67,8 @@ No accounts, no installs: one person creates a call, shares a link, the other op
 | **Privacy mode (optional)** | `iceTransportPolicy: "relay"` routes media through TURN so the other person never sees your IP | IP address exposure to the other participant |
 
 ### 3.2 Safety code details
-1. Read the local DTLS fingerprint from `pc.localDescription.sdp` and the remote one from `pc.remoteDescription.sdp` (`a=fingerprint:` lines).
+0. **Commit first** (issue #94). Every peer connection gets a fresh ECDSA P-256 certificate, and each side's encrypted `hello` carries a SHA-256 commitment to its fingerprint. Every offer and answer of the other side must carry exactly the committed fingerprint, checked before it is applied, or the call ends. Without this, someone in the middle with the link could see both real fingerprints first and search about 2^18 certificates per side for a pair whose codes match. With it, his chance is 2^-36 per attempt (details in `docs/protocol.md` section 5). The 36-bit code is a short authentication string by design: it is less than the 128 bits OWASP ASVS V11.4.3 asks of a hash, a documented exception that the commitment makes acceptable.
+1. Read the local DTLS fingerprint from `pc.currentLocalDescription.sdp` and the remote one from `pc.currentRemoteDescription.sdp` (`a=fingerprint:` lines: the descriptions the connection really uses). Both must be exactly the committed ones (step 0), or the call ends.
 2. Sort the two fingerprints so both sides get the same order, then join them.
 3. `SHA-256` the result and take the first 36 bits → 6 emoji from a fixed 64-emoji list (or the same six indices as two-digit numbers `00`–`63` for accessibility).
 4. If someone is in the middle, each side sees a different pair of fingerprints, so the codes **will not match**.

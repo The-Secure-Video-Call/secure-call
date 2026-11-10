@@ -66,7 +66,10 @@ describe('encrypted signal payload codec', () => {
     }
     const helloPayload: SignalPayload = {
       kind: 'hello',
-      data: { sessionId: 'AAAAAAAAAAAAAAAAAAAAAA' },
+      data: {
+        sessionId: 'AAAAAAAAAAAAAAAAAAAAAA',
+        fingerprintCommitment: 'A'.repeat(43),
+      },
       seq: 0,
     };
     const encryptedHello = await encryptSignalPayload({
