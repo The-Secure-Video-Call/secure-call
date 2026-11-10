@@ -2,16 +2,18 @@
 # encrypted FTP (FTPS). Runs after every push to main, i.e. every merged PR, and can be
 # started by hand from the Actions tab.
 #
-# Two jobs, so third-party code never runs next to the FTP password:
+# Separate jobs, so third-party code never runs next to the FTP password:
 # - build: installs, checks and builds with no secrets and no environment. pnpm install,
 #   eslint, vitest and vite all run here, where there is nothing to steal.
-# - deploy: waits until a reviewer of the "production" environment approves it, then uploads
-#   exactly the files the build job made. No checkout, no Node and no project code run here;
-#   only the downloaded files, shell checks and lftp from Ubuntu's own packages.
-# - release: after a successful upload, publishes SHA256SUMS of exactly those files as the
-#   GitHub Release "web-<commit>", so anyone can check the live site against this repository
-#   (scripts/verify-deployed.mjs, SECURITY.md). The build is reproducible (ci.yml checks it),
-#   so anyone can also rebuild the commit and compare.
+# - rebuild: builds the same commit again, independently, on macOS with almost no environment.
+#   Nothing is uploaded unless both builds are byte-identical.
+# - deploy (main only): waits until a reviewer of the "production" environment approves it,
+#   then uploads exactly the files the build job made. No checkout, no Node and no project
+#   code run here; only the downloaded files, shell checks and lftp from Ubuntu's own packages.
+# - release (main only): after a successful upload, publishes SHA256SUMS of exactly those
+#   files as the GitHub Release "web-<commit>", attested as made by this workflow on main, so
+#   anyone can check the live site against this repository (scripts/verify-deployed.mjs,
+#   SECURITY.md) or rebuild the commit and compare.
 #
 # Settings live in the "production" environment: variables FTP_SERVER and FTP_USERNAME,
 # secret FTP_PASSWORD.
@@ -76,8 +78,44 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
+  # A second build of the same commit that shares nothing with the first: another OS, CPU and
+  # native build binaries, a fresh install with no cache, another time zone and locale, and
+  # almost no environment (a dependency that looks at CI variables sees none). The deploy job
+  # uploads nothing unless its files equal the build job's byte for byte, so a dependency that
+  # behaves differently in the deploy build, or a tampered build runner, cannot ship. It cannot
+  # catch code that is malicious the same way everywhere: every rebuild reproduces that.
+  # ci.yml's reproducible-build job runs the same comparison on every PR.
+  rebuild:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install and build with almost no environment
+        run: |
+          commit_time="$(git log -1 --format=%ct)"
+          umask 077
+          env -i PATH="$PATH" HOME="$HOME" LANG=C TZ=Pacific/Auckland pnpm install --frozen-lockfile
+          env -i PATH="$PATH" HOME="$HOME" LANG=C TZ=Pacific/Auckland SOURCE_DATE_EPOCH="$commit_time" pnpm build
+      - name: Keep the rebuilt site for the comparison
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-dist-rebuild
+          path: apps/web/dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 5
+
   deploy:
-    needs: build
+    needs: [build, rebuild]
+    # Only main reaches production, whatever branch a manual run starts from (the production
+    # environment allows main only as well).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -92,6 +130,11 @@ jobs:
         with:
           name: web-dist
           path: site
+      - name: Get the rebuilt site
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist-rebuild
+          path: rebuild
 
       # The build job runs third-party code, so its output is checked before anything reaches
       # the server. Without this, a hostile build could ship a .php file or another .htaccess
@@ -129,6 +172,37 @@ jobs:
           done <<<"$referenced_assets"
           echo "site checked: index.html, .htaccess identical to the repository, $asset_count referenced assets"
 
+      # The build job's files must equal the independent macOS rebuild's, every file and every
+      # byte. File names are not printed: they come from builds that run third-party code.
+      - name: Compare with the independent rebuild
+        run: |
+          (cd site && find . | LC_ALL=C sort) > site-entries.txt
+          (cd rebuild && find . | LC_ALL=C sort) > rebuild-entries.txt
+          (cd site && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > SHA256SUMS
+          (cd rebuild && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > rebuild-SHA256SUMS
+          if ! cmp -s site-entries.txt rebuild-entries.txt || ! cmp -s SHA256SUMS rebuild-SHA256SUMS; then
+            echo "The build differs from the independent rebuild: not deploying."; exit 1
+          fi
+          echo "The build and the independent rebuild are byte-identical ($(wc -l < SHA256SUMS) files)."
+
+      # A deploy of a commit that already has a release (a re-run, a rollback) must upload
+      # exactly what that release lists, checked before anything reaches the server. The
+      # repository is public, so this needs no token; 404 means no release yet.
+      - name: Compare with an existing release of this commit
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          url="https://github.com/$REPOSITORY/releases/download/web-${COMMIT:0:12}/SHA256SUMS"
+          status="$(curl -sS --proto '=https' --proto-redir '=https' -L -o published-SHA256SUMS -w '%{http_code}' "$url")"
+          case "$status" in
+            404) echo "No release of this commit yet." ;;
+            200)
+              cmp -s SHA256SUMS published-SHA256SUMS || { echo "This commit's release lists other files: not deploying."; exit 1; }
+              echo "Matches this commit's existing release." ;;
+            *) echo "Could not check for an existing release (HTTP $status)."; exit 1 ;;
+          esac
+
       # lftp, from Ubuntu's own packages: it handles the encrypted data connections this
       # FTP server requires (the Node-based deploy action had them reset).
       - name: Install lftp
@@ -163,34 +237,31 @@ jobs:
           bye
           LFTP
 
-  # The only job that can write to the repository (it creates the release and its tag). It has
-  # no secret and runs no project code. It hashes the artifact the deploy job checked and
-  # uploaded, and reads the toolchain versions from the repository at this commit, never from
-  # the build job (which runs third-party code) so nothing from there reaches this step.
+  # The only job that can write to the repository (the release and its tag) or sign an
+  # attestation. It has no secret and runs no project code: it hashes the artifact the deploy job
+  # checked and uploaded, and reads the toolchain versions from the repository at this commit
+  # over HTTPS (no checkout), never from the build job, so nothing from there reaches it.
   release:
     needs: deploy
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write # the release and its tag
+      id-token: write # the attestation's short-lived signing certificate (Sigstore, keyless)
+      attestations: write # storing the attestation
     steps:
       - name: Get the built site
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-dist
           path: site
-      - name: Toolchain files at this commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          path: source
-          sparse-checkout: |
-            .node-version
-            package.json
-          sparse-checkout-cone-mode: false
-      # Re-running a deploy of the same commit must give the same hashes (reproducible build);
-      # a different SHA256SUMS for an existing release fails instead of being replaced.
-      - name: Publish SHA256SUMS as a release
+
+      # Re-running a deploy of the same commit must give the same hashes (reproducible build):
+      # a different SHA256SUMS for an existing release fails instead of being replaced, and a tag
+      # of that name without a release (pushed by someone else) fails instead of being reused.
+      - name: Hash the deployed files and check for an existing release
+        id: hashes
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -204,25 +275,65 @@ jobs:
             gh release download "$tag" --pattern SHA256SUMS --output published-SHA256SUMS
             if cmp -s SHA256SUMS published-SHA256SUMS; then
               echo "$tag is already published with these exact hashes (reproducible)."
+              echo "is-new=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "$tag exists with DIFFERENT hashes: the build is not reproducible. Not replacing it."
             exit 1
           fi
-          node_version="$(tr -d '[:space:]' < source/.node-version)"
-          pnpm_version="$(sed -n 's/.*"packageManager": *"pnpm@\([0-9.]*\)".*/\1/p' source/package.json)"
+          # To a file first: with pipefail, `gh api | grep -q` can fail open on SIGPIPE.
+          gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" --jq '.[].ref' > existing-tags.txt
+          if grep -qxF "refs/tags/$tag" existing-tags.txt; then
+            echo "The tag $tag exists without a release: not reusing a tag this workflow did not make."
+            exit 1
+          fi
+          echo "is-new=true" >> "$GITHUB_OUTPUT"
+
+      # Signed with a certificate that names this workflow file, main and this commit, so a
+      # release made any other way (another workflow, a person) cannot carry it (SECURITY.md).
+      - name: Attest SHA256SUMS as made by this workflow on main
+        if: steps.hashes.outputs.is-new == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: SHA256SUMS
+
+      - name: Publish SHA256SUMS as a release
+        if: steps.hashes.outputs.is-new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="web-${COMMIT:0:12}"
+          raw="https://raw.githubusercontent.com/$GH_REPO/$COMMIT"
+          curl -fsSL --proto '=https' "$raw/.node-version" -o node-version.txt
+          curl -fsSL --proto '=https' "$raw/package.json" -o package.json
+          node_version="$(tr -d '[:space:]' < node-version.txt)"
+          pnpm_version="$(sed -n 's/.*"packageManager": *"pnpm@\([0-9.]*\)".*/\1/p' package.json)"
           [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected .node-version"; exit 1; }
           [[ "$pnpm_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected packageManager"; exit 1; }
           {
             echo "The files deployed to https://securevideocall.com from commit $COMMIT."
             echo
             echo "Built with Node $node_version and pnpm $pnpm_version (pinned in the repository),"
-            echo "with SOURCE_DATE_EPOCH set to the commit time. The build is reproducible."
+            echo "with SOURCE_DATE_EPOCH set to the commit time. Before the upload, an independent"
+            echo "rebuild on macOS produced byte-identical files."
             echo
             echo "Check the live site against this release:"
             echo
-            echo '    node scripts/verify-deployed.mjs --release '"$tag"
+            echo "    node scripts/verify-deployed.mjs --release $tag"
+            echo
+            echo "Check that this SHA256SUMS was made by the deploy workflow on main:"
+            echo
+            echo "    gh attestation verify SHA256SUMS --repo $GH_REPO \\"
+            echo "      --signer-workflow $GH_REPO/.github/workflows/deploy-web.yml \\"
+            echo "      --source-ref refs/heads/main --deny-self-hosted-runners"
             echo
             echo "or rebuild the commit yourself and compare (SECURITY.md)."
           } > release-notes.md
           gh release create "$tag" SHA256SUMS --target "$COMMIT" --title "Web app $tag" --notes-file release-notes.md
+          # The tag must be this commit (it did not exist above; check what was created).
+          tag_target="$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha')"
+          [ "$tag_target" = "commit $COMMIT" ] || { echo "The tag $tag does not point at $COMMIT."; exit 1; }
+          echo "Published $tag."

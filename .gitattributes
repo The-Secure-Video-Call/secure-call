@@ -1,0 +1,3 @@
+# Keep line endings as committed (LF) on every platform, so a rebuild anywhere matches
+# the published hashes byte for byte (SECURITY.md, "Verify the app you're running").
+* text=auto eol=lf
