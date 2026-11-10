@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   buildIceServers,
   buildPeerConnectionSettings,
+  keepOnlyOwnTurnServer,
   OWN_STUN_ICE_SERVERS,
 } from '@/rtc/iceServers';
 
 const TURN_CREDENTIALS = {
-  urls: ['turn:turn.example.com:3478?transport=udp', 'turns:turn.example.com:5349?transport=tcp'],
+  urls: [
+    'turn:turn.securevideocall.com:3478?transport=udp',
+    'turns:turn.securevideocall.com:5349?transport=tcp',
+  ],
   username: '1700003600:AAECAwQFBgcICQoLDA0ODw',
   credential: 'AAAAAAAAAAAAAAAAAAAAAAAAAAA=',
 };
@@ -30,6 +34,71 @@ describe('buildIceServers', () => {
   it('does not let the caller change the shared STUN list', () => {
     buildIceServers(undefined).push({ urls: 'stun:evil.example.com:3478' });
     expect(buildIceServers(undefined)).toEqual(OWN_STUN_ICE_SERVERS);
+  });
+});
+
+describe('keepOnlyOwnTurnServer', () => {
+  function credentialsWithUrls(urls: string[]) {
+    return { ...TURN_CREDENTIALS, urls };
+  }
+
+  it('keeps our host on port 3478 and 5349, with or without a transport', () => {
+    const ownUrls = [
+      'turn:turn.securevideocall.com:3478',
+      'turn:turn.securevideocall.com:3478?transport=udp',
+      'turns:turn.securevideocall.com:5349?transport=tcp',
+      'turns:turn.securevideocall.com:3478',
+    ];
+    expect(keepOnlyOwnTurnServer(credentialsWithUrls(ownUrls))?.urls).toEqual(ownUrls);
+  });
+
+  it.each([
+    ['another host', 'turn:turn.example.com:3478'],
+    ['a LAN IP', 'turn:192.168.1.10:3478'],
+    ['a loopback IP', 'turn:127.0.0.1:3478'],
+    ['a look-alike host (suffix)', 'turn:turn.securevideocall.com.evil.example:3478'],
+    ['a look-alike host (prefix)', 'turn:evilturn.securevideocall.com:3478'],
+    ['a sub-domain', 'turn:a.turn.securevideocall.com:3478'],
+    ['another scheme (stun)', 'stun:turn.securevideocall.com:3478'],
+    ['another scheme (https)', 'https://turn.securevideocall.com:3478'],
+    ['a user@host form', 'turn:turn.securevideocall.com@evil.example:3478'],
+    ['a user@host form with our host first', 'turn:user@turn.securevideocall.com:3478'],
+    ['a path', 'turn:turn.securevideocall.com:3478/path'],
+    ['an odd port', 'turn:turn.securevideocall.com:8080'],
+    ['a port with extra digits', 'turn:turn.securevideocall.com:34780'],
+    ['no port', 'turn:turn.securevideocall.com'],
+    ['an unknown query', 'turn:turn.securevideocall.com:3478?x=1'],
+    ['upper-case scheme', 'TURN:turn.securevideocall.com:3478'],
+    ['a trailing newline', 'turn:turn.securevideocall.com:3478\n'],
+  ])('drops %s', (_description, badUrl) => {
+    expect(keepOnlyOwnTurnServer(credentialsWithUrls([badUrl]))).toBeUndefined();
+  });
+
+  it('drops only the bad URLs and keeps the good ones', () => {
+    const result = keepOnlyOwnTurnServer(
+      credentialsWithUrls(['turn:192.168.1.10:3478', 'turns:turn.securevideocall.com:5349']),
+    );
+    expect(result?.urls).toEqual(['turns:turn.securevideocall.com:5349']);
+    expect(result?.username).toBe(TURN_CREDENTIALS.username);
+  });
+
+  it('returns undefined without credentials', () => {
+    expect(keepOnlyOwnTurnServer(undefined)).toBeUndefined();
+  });
+});
+
+describe('only bad TURN URLs from the server', () => {
+  const BAD_TURN_CREDENTIALS = { ...TURN_CREDENTIALS, urls: ['turn:192.168.1.10:3478'] };
+
+  it('normal mode uses only our STUN server and never the bad URL', () => {
+    expect(buildPeerConnectionSettings(BAD_TURN_CREDENTIALS, false)).toEqual({
+      iceServers: OWN_STUN_ICE_SERVERS,
+      iceTransportPolicy: 'all',
+    });
+  });
+
+  it('privacy mode fails closed: no peer connection settings', () => {
+    expect(buildPeerConnectionSettings(BAD_TURN_CREDENTIALS, true)).toBeNull();
   });
 });
 

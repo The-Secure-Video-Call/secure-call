@@ -79,8 +79,11 @@ servers can see and 3.4 for the web app trust problem); the exact wire format an
   `localStorage`). When it is on, every peer connection (the first one, every reconnect and its
   ICE restarts) is created with `iceTransportPolicy: "relay"` and only our TURN server (no
   STUN), and a second layer never sends a local candidate whose type is not `relay`
-  (neither as a candidate message nor inside an offer or answer). If the server sends no TURN
-  server, the app creates no peer connection, says so, and never falls back to a direct
+  (neither as a candidate message nor inside an offer or answer). The app accepts only
+  `turn:`/`turns:` URLs for exactly `turn.securevideocall.com` (port 3478 or 5349, optional
+  `?transport=udp|tcp`) from the server's `joined` message and drops every other URL, so a
+  hostile signaling server cannot point browsers at another host or a LAN address. If the
+  server sends no such TURN server, the app creates no peer connection, says so, and never falls back to a direct
   connection. Changing the switch during a call applies from the next call or reconnect.
 - **What it does not do:**
   - It hides only **your** IP address. The other person decides for themselves: if they have
