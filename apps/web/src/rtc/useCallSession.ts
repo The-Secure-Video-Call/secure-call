@@ -21,6 +21,9 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
   const [sessionDescriptionsVersion, setSessionDescriptionsVersion] = useState(0);
   const [hasOtherPersonLeft, setHasOtherPersonLeft] = useState(false);
   const [endedReason, setEndedReason] = useState<CallSessionEndedReason | null>(null);
+  const [reconnectState, setReconnectState] = useState<'none' | 'reconnecting' | 'reconnected'>(
+    'none',
+  );
   const callSessionRef = useRef<CallSession | null>(null);
 
   useEffect(() => {
@@ -54,6 +57,15 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
           },
           onSessionDescriptionsMayHaveChanged() {
             if (!isEffectCancelled) setSessionDescriptionsVersion((version) => version + 1);
+          },
+          onReconnecting() {
+            if (isEffectCancelled) return;
+            setReconnectState('reconnecting');
+            setPeerConnectionState(null);
+            setHasOtherPersonLeft(false);
+          },
+          onReconnected() {
+            if (!isEffectCancelled) setReconnectState('reconnected');
           },
           // Problems can contain SDP/ICE details, so they are deliberately not logged.
           onSessionProblem() {},
@@ -98,6 +110,7 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
     readConnectionStats,
     remoteMediaStream,
     callConnectionStatus,
+    reconnectState,
     peerConnectionNumber,
     sessionDescriptionsVersion,
     endedReason,

@@ -18,6 +18,7 @@ const ENDED_REASON_TEXT: Record<CallSessionEndedReason, string> = {
   'hung-up': 'The call ended.',
   'room-full': 'This call already has two people, so you cannot join.',
   'room-expired': 'This call link has expired. Start a new call.',
+  'reconnect-failed': "Couldn't reconnect. Start a new call.",
   'signaling-connection-lost': 'The connection to the server was lost.',
   'invalid-signaling-message': 'The server sent something unexpected, so the call was ended.',
   'message-not-sent': 'The call could not be set up on this device. Start a new call.',
@@ -48,6 +49,7 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
   const {
     remoteMediaStream,
     callConnectionStatus,
+    reconnectState,
     peerConnectionNumber,
     sessionDescriptionsVersion,
     endedReason,
@@ -131,7 +133,13 @@ export function CallPage(props: { roomSecret: Uint8Array; onReturnToLobby(): voi
       ? ENDED_REASON_TEXT[endedReason]
       : localMediaStream === null && mediaErrorMessage === null
         ? 'Starting camera and microphone…'
-        : describeCallConnectionStatusText(callConnectionStatus, isConnectionVerified);
+        : reconnectState === 'reconnecting'
+          ? 'Reconnecting…'
+          : reconnectState === 'reconnected' &&
+              callConnectionStatus === 'connected' &&
+              !isConnectionVerified
+            ? 'Reconnected. Compare the safety code again.'
+            : describeCallConnectionStatusText(callConnectionStatus, isConnectionVerified);
 
   return (
     <main className="call-page">
