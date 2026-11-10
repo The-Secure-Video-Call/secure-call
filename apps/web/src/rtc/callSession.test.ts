@@ -22,7 +22,7 @@ function createMockPeerConnection() {
     restartIce: vi.fn(),
     getStats: vi.fn(async () => new Map() as unknown as RTCStatsReport),
     onnegotiationneeded: null as ((negotiationNeededEvent: Event) => void) | null,
-    onicecandidate: null,
+    onicecandidate: null as ((iceCandidateEvent: RTCPeerConnectionIceEvent) => void) | null,
     ontrack: null as ((trackEvent: RTCTrackEvent) => void) | null,
     onconnectionstatechange: null,
     onsignalingstatechange: null as (() => void) | null,
@@ -36,10 +36,14 @@ function createMockPeerConnection() {
 
 const roomSecretBytes = new Uint8Array(32).fill(7);
 
-async function startSession(signalKey?: CryptoKey) {
+async function startSession(
+  signalKey?: CryptoKey,
+  readIsPrivacyModeOn: () => boolean = () => false,
+) {
   const roomSignalKey = await deriveSignalKey(roomSecretBytes);
   const peerConnections: ReturnType<typeof createMockPeerConnection>[] = [];
   const iceServersUsed: RTCIceServer[][] = [];
+  const iceTransportPoliciesUsed: RTCIceTransportPolicy[] = [];
   const signalingClient = {
     sendSignal: vi.fn<(payload: string, iv: string) => void>(),
     leaveAndClose: vi.fn(),
@@ -67,7 +71,9 @@ async function startSession(signalKey?: CryptoKey) {
     signalingUrl: 'ws://localhost:8000/ws/signal/',
     localMediaStream,
     events: sessionEvents,
-    createPeerConnection: (iceServers) => {
+    readIsPrivacyModeOn,
+    createPeerConnection: (iceServers, iceTransportPolicy) => {
+      iceTransportPoliciesUsed.push(iceTransportPolicy);
       iceServersUsed.push(iceServers);
       const mockPeerConnection = createMockPeerConnection();
       peerConnections.push(mockPeerConnection);
@@ -83,6 +89,7 @@ async function startSession(signalKey?: CryptoKey) {
     callSession,
     peerConnections,
     iceServersUsed,
+    iceTransportPoliciesUsed,
     signalingClient,
     sessionEvents,
     server,
@@ -649,6 +656,124 @@ describe('call session: encrypted signaling fails closed', () => {
         buildIceServers(turnCredentials),
         buildIceServers(turnCredentials),
       ]);
+    });
+
+    describe('privacy mode', () => {
+      const RELAY_CANDIDATE = 'candidate:3 1 udp 41885439 198.51.100.7 60000 typ relay';
+      const HOST_CANDIDATE = 'candidate:1 1 udp 2122260223 192.168.1.5 50000 typ host';
+      const SRFLX_CANDIDATE = 'candidate:2 1 udp 1686052607 203.0.113.9 50000 typ srflx';
+
+      it('uses only the TURN server and iceTransportPolicy relay', async () => {
+        const { server, iceServersUsed, iceTransportPoliciesUsed } = await startSession(
+          undefined,
+          () => true,
+        );
+        server().onJoined('second', turnCredentials);
+        expect(iceTransportPoliciesUsed).toEqual(['relay']);
+        expect(iceServersUsed).toHaveLength(1);
+        expect(iceServersUsed[0]).toEqual([
+          {
+            urls: turnCredentials.urls,
+            username: turnCredentials.username,
+            credential: turnCredentials.credential,
+          },
+        ]);
+      });
+
+      it('never sends a host or srflx candidate, only relay', async () => {
+        const startedSession = await startSession(undefined, () => true);
+        startedSession.server().onJoined('second', turnCredentials);
+        const peerConnection = startedSession.peerConnections[0]!;
+        const fakePeer = createFakePeer(startedSession);
+        await fakePeer.readOurHello();
+        await fakePeer.sendHello();
+        await vi.waitFor(() => expect(peerConnection.addTrack).toHaveBeenCalled());
+        for (const candidate of [HOST_CANDIDATE, SRFLX_CANDIDATE, RELAY_CANDIDATE]) {
+          peerConnection.onicecandidate?.({
+            candidate: { candidate, sdpMid: '0', sdpMLineIndex: 0, usernameFragment: 'abc' },
+          } as RTCPeerConnectionIceEvent);
+        }
+        await vi.waitFor(() =>
+          expect(startedSession.signalingClient.sendSignal).toHaveBeenCalledTimes(2),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        // hello + the relay candidate; nothing for host and srflx
+        expect(startedSession.signalingClient.sendSignal).toHaveBeenCalledTimes(2);
+      });
+
+      it('no turn: creates no peer connection, shows the reason and does not retry', async () => {
+        const {
+          server,
+          peerConnections,
+          sessionEvents,
+          signalingClient,
+          iceTransportPoliciesUsed,
+        } = await startSession(undefined, () => true);
+        server().onJoined('second');
+        expect(peerConnections).toHaveLength(0);
+        expect(iceTransportPoliciesUsed).toHaveLength(0);
+        expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('privacy-mode-needs-relay');
+        expect(signalingClient.leaveAndClose).toHaveBeenCalled();
+        server().onPeerJoined();
+        expect(peerConnections).toHaveLength(0);
+      });
+
+      it('turn without URLs counts as no turn', async () => {
+        const { server, peerConnections, sessionEvents } = await startSession(
+          undefined,
+          () => true,
+        );
+        server().onJoined('first', { ...turnCredentials, urls: [] });
+        server().onPeerJoined();
+        expect(peerConnections).toHaveLength(0);
+        expect(sessionEvents.onSessionEnded).toHaveBeenCalledWith('privacy-mode-needs-relay');
+      });
+
+      it('off: unchanged (all candidates, STUN, candidates are sent)', async () => {
+        const startedSession = await startSession(undefined, () => false);
+        startedSession.server().onJoined('second', turnCredentials);
+        expect(startedSession.iceTransportPoliciesUsed).toEqual(['all']);
+        expect(startedSession.iceServersUsed).toEqual([buildIceServers(turnCredentials)]);
+        const fakePeer = createFakePeer(startedSession);
+        await fakePeer.readOurHello();
+        await fakePeer.sendHello();
+        await vi.waitFor(() =>
+          expect(startedSession.peerConnections[0]!.addTrack).toHaveBeenCalled(),
+        );
+        startedSession.peerConnections[0]!.onicecandidate?.({
+          candidate: { candidate: HOST_CANDIDATE, sdpMid: '0', sdpMLineIndex: 0 },
+        } as RTCPeerConnectionIceEvent);
+        await vi.waitFor(() =>
+          expect(startedSession.signalingClient.sendSignal).toHaveBeenCalledTimes(2),
+        );
+      });
+
+      it('is read again for every new peer connection, also when the other person rejoins', async () => {
+        let isPrivacyModeOn = false;
+        const startedSession = await startSession(undefined, () => isPrivacyModeOn);
+        startedSession.server().onJoined('first', turnCredentials);
+        startedSession.server().onPeerJoined();
+        isPrivacyModeOn = true; // changed mid-call: this connection stays as it is
+        expect(startedSession.iceTransportPoliciesUsed).toEqual(['all']);
+        startedSession.server().onPeerLeft();
+        startedSession.server().onPeerJoined(); // next connection honours it, using the TURN kept
+        expect(startedSession.iceTransportPoliciesUsed).toEqual(['all', 'relay']);
+        expect(startedSession.sessionEvents.onSessionEnded).not.toHaveBeenCalled();
+      });
+
+      it('a rejoining peer after privacy mode was turned on, without turn, ends the call', async () => {
+        let isPrivacyModeOn = false;
+        const startedSession = await startSession(undefined, () => isPrivacyModeOn);
+        startedSession.server().onJoined('first'); // no turn
+        startedSession.server().onPeerJoined();
+        isPrivacyModeOn = true;
+        startedSession.server().onPeerLeft();
+        startedSession.server().onPeerJoined();
+        expect(startedSession.peerConnections).toHaveLength(1);
+        expect(startedSession.sessionEvents.onSessionEnded).toHaveBeenCalledWith(
+          'privacy-mode-needs-relay',
+        );
+      });
     });
 
     it('never puts the credential into a session problem', async () => {

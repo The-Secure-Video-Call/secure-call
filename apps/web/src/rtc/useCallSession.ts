@@ -12,7 +12,14 @@ import { resolveSignalingUrl } from '@/signaling/signalingUrl';
  * Joins the room for `roomSecret` once the local media is ready and reports what the page needs.
  * Only the derived room ID leaves the browser; the secret itself is never passed on or logged.
  */
-export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaStream | null) {
+export function useCallSession(
+  roomSecret: Uint8Array,
+  localMediaStream: MediaStream | null,
+  isPrivacyModeOn: boolean,
+) {
+  // Read at every join, so a change applies to the next call or reconnect only.
+  const isPrivacyModeOnRef = useRef(isPrivacyModeOn);
+  isPrivacyModeOnRef.current = isPrivacyModeOn;
   const [remoteMediaStream, setRemoteMediaStream] = useState<MediaStream | null>(null);
   const [peerConnectionState, setPeerConnectionState] = useState<RTCPeerConnectionState | null>(
     null,
@@ -38,6 +45,7 @@ export function useCallSession(roomSecret: Uint8Array, localMediaStream: MediaSt
         signalKey,
         signalingUrl: resolveSignalingUrl(import.meta.env.VITE_SIGNALING_URL),
         localMediaStream,
+        readIsPrivacyModeOn: () => isPrivacyModeOnRef.current,
         events: {
           onPeerConnectionOpened(newPeerConnectionNumber) {
             if (!isEffectCancelled) setPeerConnectionNumber(newPeerConnectionNumber);

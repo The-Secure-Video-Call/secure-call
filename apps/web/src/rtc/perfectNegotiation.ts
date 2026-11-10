@@ -1,3 +1,8 @@
+import {
+  isRelayCandidateText,
+  redactRelatedAddress,
+  removeNonRelayCandidateLines,
+} from '@/rtc/relayOnlyCandidates';
 import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
 
 /** The part of RTCPeerConnection the negotiation uses; tests pass a mock. */
@@ -39,8 +44,16 @@ export function startPerfectNegotiation(negotiationOptions: {
   isPolite: boolean;
   sendPayload(payloadWithoutSequenceNumber: SignalPayloadWithoutSequenceNumber): void;
   onNegotiationError(negotiationError: unknown): void;
+  /**
+   * Privacy mode: never send a local candidate whose type is not `relay`, neither as a candidate
+   * message nor inside an offer or answer.
+   */
+  sendOnlyRelayCandidates?: boolean;
 }) {
   const { peerConnection, isPolite, sendPayload, onNegotiationError } = negotiationOptions;
+  const sendOnlyRelayCandidates = negotiationOptions.sendOnlyRelayCandidates === true;
+  const prepareSdpForSending = (sdp: string) =>
+    sendOnlyRelayCandidates ? removeNonRelayCandidateLines(sdp) : sdp;
   let isMakingOffer = false;
   let isIgnoringOffer = false;
   let isStopped = false;
@@ -52,7 +65,10 @@ export function startPerfectNegotiation(negotiationOptions: {
       await peerConnection.setLocalDescription();
       const localDescription = peerConnection.localDescription;
       if (!isStopped && localDescription?.type === 'offer') {
-        sendPayload({ kind: 'offer', data: { type: 'offer', sdp: localDescription.sdp } });
+        sendPayload({
+          kind: 'offer',
+          data: { type: 'offer', sdp: prepareSdpForSending(localDescription.sdp) },
+        });
       }
     } catch (negotiationError) {
       if (!isStopped) onNegotiationError(negotiationError);
@@ -64,10 +80,13 @@ export function startPerfectNegotiation(negotiationOptions: {
   peerConnection.onicecandidate = (iceCandidateEvent) => {
     const iceCandidate = iceCandidateEvent.candidate;
     if (isStopped || iceCandidate === null) return;
+    if (sendOnlyRelayCandidates && !isRelayCandidateText(iceCandidate.candidate)) return;
     sendPayload({
       kind: 'candidate',
       data: {
-        candidate: iceCandidate.candidate,
+        candidate: sendOnlyRelayCandidates
+          ? redactRelatedAddress(iceCandidate.candidate)
+          : iceCandidate.candidate,
         sdpMid: iceCandidate.sdpMid,
         sdpMLineIndex: iceCandidate.sdpMLineIndex,
         usernameFragment: iceCandidate.usernameFragment,
@@ -96,7 +115,10 @@ export function startPerfectNegotiation(negotiationOptions: {
         await peerConnection.setLocalDescription();
         const localDescription = peerConnection.localDescription;
         if (!isStopped && localDescription?.type === 'answer') {
-          sendPayload({ kind: 'answer', data: { type: 'answer', sdp: localDescription.sdp } });
+          sendPayload({
+            kind: 'answer',
+            data: { type: 'answer', sdp: prepareSdpForSending(localDescription.sdp) },
+          });
         }
       }
     }

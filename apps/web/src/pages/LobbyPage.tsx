@@ -2,12 +2,15 @@ import { useCallback, useState } from 'react';
 import { APP_TITLE } from '@/appTitle';
 import { buildCallLink } from '@/crypto/callLink';
 import { encodeSecret, generateSecret } from '@/crypto/secret';
+import { PrivacyModeSwitch } from '@/components/PrivacyModeSwitch';
 import { useCameraAndMicrophonePreview } from '@/media/useCameraAndMicrophonePreview';
+import { usePrivacyMode } from '@/rtc/usePrivacyMode';
 
 /** The start page: create a call link, preview camera and microphone, pick devices. */
 export function LobbyPage() {
   const [selectedCameraDeviceId, setSelectedCameraDeviceId] = useState('');
   const [selectedMicrophoneDeviceId, setSelectedMicrophoneDeviceId] = useState('');
+  const { isPrivacyModeOn, setIsPrivacyModeOn } = usePrivacyMode();
   const [callLink, setCallLink] = useState<string | null>(null);
   const [isCallLinkCopied, setIsCallLinkCopied] = useState(false);
   const { previewVideoRef, mediaErrorMessage, availableMediaDevices } =
@@ -76,6 +79,7 @@ export function LobbyPage() {
           ))}
         </select>
       </label>
+      <PrivacyModeSwitch isPrivacyModeOn={isPrivacyModeOn} onChange={setIsPrivacyModeOn} />
       <button type="button" onClick={createNewCallLink}>
         New call
       </button>

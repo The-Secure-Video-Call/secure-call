@@ -244,9 +244,10 @@ change ends the call. A new peer connection needs a new verification.
 | 4003 | Unsupported data | A binary frame was received.                                                                                                                              |
 | 4008 | Policy violation | A text frame is not a valid client message (bad JSON, unknown type or field, wrong type). The web client uses it when the server sends something invalid. |
 | 4009 | Message too big  | A text frame is larger than 64 KiB.                                                                                                                       |
+| 4029 | Rate limited     | Too many joins or messages. An `error` with code `rate-limited` is sent first.                                                                            |
 
-The numbers 4003, 4008 and 4009 carry the RFC 6455 meanings of 1003, 1008 and 1009 in their last
-digits. They are in the 4000 range because browsers only allow an application to close with 1000 or
+The numbers 4003, 4008, 4009 and 4029 carry the RFC 6455 meanings of 1003, 1008 and 1009 (and
+HTTP 429 for 4029) in their last digits. They are in the 4000 range because browsers only allow an application to close with 1000 or
 3000–4999 (anything else throws `InvalidAccessError`), and Daphne (Autobahn) only lets an application
 send 1000 or 3000–4999 (anything else raises and skips `disconnect`). On any of these closes the
 server removes the connection from its room first, so the other person gets `peer-left`.

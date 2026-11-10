@@ -244,7 +244,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 
 ### M3 — Works on real-world networks
 - [ ] Self-hosted coturn with time-limited HMAC credentials issued by the signaling server
-- [ ] "Privacy mode" toggle (relay-only, hides your IP from the other person)
+- [x] "Privacy mode" toggle (relay-only, hides your IP from the other person)
 - [x] Reconnect: ICE restart on network change (Wi-Fi ↔ mobile), WebSocket auto-reconnect
 - [x] Connection quality indicator (from `getStats()`: packet loss, round-trip time)
 - [ ] Mobile layout and testing on iOS Safari and Android Chrome
