@@ -1,7 +1,13 @@
 # CD: builds the web app and uploads it to securevideocall.com (ServerByt hosting) over
 # encrypted FTP (FTPS). Runs after every push to main, i.e. every merged PR, and can be
-# started by hand from the Actions tab. Each run waits until a reviewer of the "production"
-# environment approves it.
+# started by hand from the Actions tab.
+#
+# Two jobs, so third-party code never runs next to the FTP password:
+# - build: installs, checks and builds with no secrets and no environment. pnpm install,
+#   eslint, vitest and vite all run here, where there is nothing to steal.
+# - deploy: waits until a reviewer of the "production" environment approves it, then uploads
+#   exactly the files the build job made. No checkout, no Node and no project code run here;
+#   only the downloaded files, shell checks and lftp from Ubuntu's own packages.
 #
 # Settings live in the "production" environment: variables FTP_SERVER and FTP_USERNAME,
 # secret FTP_PASSWORD.
@@ -21,12 +27,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment:
-      name: production
-      url: https://securevideocall.com
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +53,46 @@ jobs:
       - run: pnpm test
 
       - run: pnpm build
+
+      # Hidden files are left out by default, which would drop .htaccess (the CSP and every
+      # security header), so they are included. The deploy job checks the digest on download.
+      - name: Keep the built site for the deploy job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-dist
+          path: apps/web/dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://securevideocall.com
+    steps:
+      # Fails if the files differ from what the build job uploaded (digest-mismatch: error).
+      - name: Get the built site
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: site
+
+      # Before touching the server: the site is complete, so `mirror --delete` below can never
+      # remove the live assets while index.html points at files that are not there.
+      - name: Check the built site is complete
+        run: |
+          test -f site/index.html || { echo "index.html missing"; exit 1; }
+          test -f site/.htaccess || { echo ".htaccess (security headers) missing"; exit 1; }
+          grep -q 'Content-Security-Policy' site/.htaccess || { echo ".htaccess has no CSP"; exit 1; }
+          referenced_assets=$(grep -oE '(src|href)="/assets/[^"]+"' site/index.html | sed -E 's#^[a-z]+="/##; s#"$##' | sort -u)
+          [ -n "$referenced_assets" ] || { echo "index.html references no assets"; exit 1; }
+          for asset in $referenced_assets; do
+            test -f "site/$asset" || { echo "missing: $asset"; exit 1; }
+          done
+          echo "site complete: index.html, .htaccess, $(echo "$referenced_assets" | wc -l | tr -d ' ') referenced assets"
 
       # lftp, from Ubuntu's own packages: it handles the encrypted data connections this
       # FTP server requires (the Node-based deploy action had them reset).
@@ -75,9 +118,9 @@ jobs:
           set net:timeout 30
           set net:max-retries 3
           set net:reconnect-interval-base 5
-          mirror --reverse --delete --verbose --no-perms apps/web/dist/assets assets
-          put -O . apps/web/dist/index.html
-          put -O . apps/web/dist/.htaccess
+          mirror --reverse --delete --verbose --no-perms site/assets assets
+          put -O . site/index.html
+          put -O . site/.htaccess
           cls -l
           bye
           LFTP
