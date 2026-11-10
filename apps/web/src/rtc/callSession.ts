@@ -6,17 +6,9 @@ import {
   encryptSignalPayload,
   type SignalAadContext,
 } from '@/rtc/signalPayloadCodec';
+import { buildIceServers } from '@/rtc/iceServers';
 import { connectToSignalingServer, type SignalingClient } from '@/signaling/signalingClient';
 import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
-
-/**
- * Public STUN only for now; TURN comes in M3.
- * TODO(M3): these third-party servers see the user's IP address; replace with our own coturn.
- */
-export const PUBLIC_STUN_ICE_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun.cloudflare.com:3478' },
-];
 
 /** The part of RTCPeerConnection the call session uses; tests pass a mock. */
 export type CallPeerConnection = NegotiablePeerConnection &
@@ -117,17 +109,20 @@ export function startCallSession(sessionOptions: {
   signalingUrl: string;
   localMediaStream: MediaStream;
   events: CallSessionEvents;
-  createPeerConnection?: () => CallPeerConnection;
+  /** Receives the ICE servers (with TURN credentials, if any): never log or store them. */
+  createPeerConnection?: (iceServers: RTCIceServer[]) => CallPeerConnection;
   connectToSignaling?: typeof connectToSignalingServer;
 }): CallSession {
   const { roomId, signalKey, signalingUrl, localMediaStream, events } = sessionOptions;
   const createPeerConnection =
     sessionOptions.createPeerConnection ??
-    (() => new RTCPeerConnection({ iceServers: PUBLIC_STUN_ICE_SERVERS }));
+    ((iceServers: RTCIceServer[]) => new RTCPeerConnection({ iceServers }));
   const connectToSignaling = sessionOptions.connectToSignaling ?? connectToSignalingServer;
   let signalingClient: SignalingClient | null = null;
   let hasEnded = false;
   let current: PeerConnectionState | null = null;
+  /** From our own `joined`, kept in memory only; used for every connection of this session. */
+  let iceServers: RTCIceServer[] = buildIceServers(undefined);
 
   /** AAD fields for messages WE send to the peer; null for a hello. */
   function buildOutgoingAadContext(
@@ -269,7 +264,7 @@ export function startCallSession(sessionOptions: {
 
   function openPeerConnection(isPolite: boolean): void {
     closePeerConnection();
-    const peerConnection = createPeerConnection();
+    const peerConnection = createPeerConnection(iceServers);
     const negotiation = startPerfectNegotiation({
       peerConnection,
       isPolite,
@@ -319,7 +314,8 @@ export function startCallSession(sessionOptions: {
     signalingUrl,
     roomId,
     events: {
-      onJoined(role) {
+      onJoined(role, turnCredentials) {
+        iceServers = buildIceServers(turnCredentials);
         // `second` arrived after the other person, who is waiting for us: be polite.
         if (role === 'second') openPeerConnection(true);
       },

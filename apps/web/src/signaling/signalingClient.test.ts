@@ -71,10 +71,39 @@ describe('connectToSignalingServer', () => {
     receive('{"v":1,"type":"peer-joined"}');
     receive('{"v":1,"type":"signal","payload":"QUJD","iv":"AAAAAAAAAAAAAAAA"}');
     receive('{"v":1,"type":"peer-left"}');
-    expect(events.onJoined).toHaveBeenCalledWith('second');
+    expect(events.onJoined).toHaveBeenCalledWith('second', undefined);
     expect(events.onPeerJoined).toHaveBeenCalledTimes(1);
     expect(events.onSignal).toHaveBeenCalledWith('QUJD', 'AAAAAAAAAAAAAAAA');
     expect(events.onPeerLeft).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the TURN credentials of joined on, and none when joined has no turn', () => {
+    const turn = {
+      urls: ['turn:turn.example.com:3478?transport=udp'],
+      username: '1700003600:AAECAwQFBgcICQoLDA0ODw',
+      credential: 'AAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    };
+    const withTurn = connect();
+    withTurn.receive(JSON.stringify({ v: 1, type: 'joined', role: 'first', turn }));
+    expect(withTurn.events.onJoined).toHaveBeenCalledWith('first', turn);
+    const withoutTurn = connect();
+    withoutTurn.receive('{"v":1,"type":"joined","role":"first"}');
+    expect(withoutTurn.events.onJoined).toHaveBeenCalledWith('first', undefined);
+  });
+
+  it.each([
+    ['an http: URL', { urls: ['http://turn.example.com'], username: 'user', credential: 'secret' }],
+    [
+      'an extra field',
+      { urls: ['turn:turn.example.com:3478'], username: 'user', credential: 'secret', extra: 1 },
+    ],
+    ['no URLs', { urls: [], username: 'user', credential: 'secret' }],
+  ])('rejects joined with a turn that has %s and closes with 4008', (_description, badTurn) => {
+    const { receive, events, fakeWebSocket } = connect();
+    receive(JSON.stringify({ v: 1, type: 'joined', role: 'first', turn: badTurn }));
+    expect(events.onJoined).not.toHaveBeenCalled();
+    expect(fakeWebSocket.close).toHaveBeenCalledWith(4008);
+    expect(events.onClosed).toHaveBeenCalledWith('invalid-server-message');
   });
 
   it('drops a server signal without iv and closes the connection', () => {
