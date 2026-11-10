@@ -8,17 +8,9 @@ import {
   encryptSignalPayload,
   type SignalAadContext,
 } from '@/rtc/signalPayloadCodec';
+import { buildIceServers } from '@/rtc/iceServers';
 import { connectToSignalingServer, type SignalingClient } from '@/signaling/signalingClient';
 import type { SignalPayload, SignalPayloadWithoutSequenceNumber } from '@protocol/index';
-
-/**
- * Public STUN only for now; TURN comes in M3.
- * TODO(M3): these third-party servers see the user's IP address; replace with our own coturn.
- */
-export const PUBLIC_STUN_ICE_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun.cloudflare.com:3478' },
-];
 
 /** The part of RTCPeerConnection the call session uses; tests pass a mock. */
 export type CallPeerConnection = NegotiablePeerConnection &
@@ -30,6 +22,7 @@ export type CallPeerConnection = NegotiablePeerConnection &
     | 'connectionState'
     | 'currentLocalDescription'
     | 'currentRemoteDescription'
+    | 'getStats'
     | 'ontrack'
     | 'onsignalingstatechange'
     | 'onconnectionstatechange'
@@ -111,6 +104,11 @@ export type CallSession = {
    * is no connection or negotiation has not set both. Never log or send the returned values.
    */
   readSessionDescriptionSdps(): { localSdp: string; remoteSdp: string } | null;
+  /**
+   * The raw getStats() report of the current connection, or null if there is none. It contains
+   * IP addresses: only feed it to the quality calculation, never log, store or show it.
+   */
+  readConnectionStats(): Promise<RTCStatsReport | null>;
 };
 
 /**
@@ -132,13 +130,14 @@ export function startCallSession(sessionOptions: {
   signalingUrl: string;
   localMediaStream: MediaStream;
   events: CallSessionEvents;
-  createPeerConnection?: () => CallPeerConnection;
+  /** Receives the ICE servers (with TURN credentials, if any): never log or store them. */
+  createPeerConnection?: (iceServers: RTCIceServer[]) => CallPeerConnection;
   connectToSignaling?: typeof connectToSignalingServer;
 }): CallSession {
   const { roomId, signalKey, signalingUrl, localMediaStream, events } = sessionOptions;
   const createPeerConnection =
     sessionOptions.createPeerConnection ??
-    (() => new RTCPeerConnection({ iceServers: PUBLIC_STUN_ICE_SERVERS }));
+    ((iceServers: RTCIceServer[]) => new RTCPeerConnection({ iceServers }));
   const connectToSignaling = sessionOptions.connectToSignaling ?? connectToSignalingServer;
   let signalingClient: SignalingClient | null = null;
   /** Events of an earlier signaling client (a dropped or discarded one) must be ignored. */
@@ -146,6 +145,8 @@ export function startCallSession(sessionOptions: {
   let hasJoinedBefore = false;
   let hasEnded = false;
   let current: PeerConnectionState | null = null;
+  /** From our own `joined`, kept in memory only; used for every connection of this session. */
+  let iceServers: RTCIceServer[] = buildIceServers(undefined);
 
   /** AAD fields for messages WE send to the peer; null for a hello. */
   function buildOutgoingAadContext(
@@ -288,7 +289,7 @@ export function startCallSession(sessionOptions: {
 
   function openPeerConnection(isPolite: boolean): void {
     closePeerConnection();
-    const peerConnection = createPeerConnection();
+    const peerConnection = createPeerConnection(iceServers);
     const negotiation = startPerfectNegotiation({
       peerConnection,
       isPolite,
@@ -345,8 +346,10 @@ export function startCallSession(sessionOptions: {
       signalingUrl,
       roomId,
       events: {
-        onJoined(role) {
+        onJoined(role, turnCredentials) {
           if (!isCurrentClient()) return;
+          // Every join brings its own TURN credentials (or none), so a reconnect uses fresh ones.
+          iceServers = buildIceServers(turnCredentials);
           hasJoinedBefore = true;
           if (reconnectScheduler.isActive) {
             reconnectScheduler.stop();
@@ -431,6 +434,14 @@ export function startCallSession(sessionOptions: {
       const remoteDescription = current?.peerConnection.currentRemoteDescription;
       if (!localDescription || !remoteDescription) return null;
       return { localSdp: localDescription.sdp, remoteSdp: remoteDescription.sdp };
+    },
+    async readConnectionStats() {
+      if (hasEnded || !current) return null;
+      try {
+        return await current.peerConnection.getStats();
+      } catch {
+        return null;
+      }
     },
     async replaceLocalVideoTrack(newVideoTrack) {
       const videoSenders = (current?.peerConnection.getSenders() ?? []).filter(

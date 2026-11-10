@@ -121,6 +121,34 @@ body {
   font-size: 0.875rem;
 }
 
+.connection-quality {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.connection-quality-dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: #8a8a8a;
+}
+
+.connection-quality-good .connection-quality-dot {
+  background: #1e8e3e;
+}
+
+.connection-quality-fair .connection-quality-dot {
+  background: #f9ab00;
+}
+
+.connection-quality-poor .connection-quality-dot {
+  background: #d93025;
+}
+
 /* ==========================================================================
    Mobile layout (M3, issue #51). Self-contained block: phone widths (360–430 px) in portrait
    and landscape, safe-area insets, 44×44 px touch targets. Keep other features' CSS above.

@@ -3,6 +3,7 @@ import {
   parseServerMessage,
   type ClientMessage,
   type ServerErrorCode,
+  type TurnCredentials,
 } from '@protocol/index';
 
 export const CLOSE_CODE_NORMAL = 1000;
@@ -29,7 +30,8 @@ export type SignalingClientClosedReason =
   'closed-by-us' | 'invalid-server-message' | 'connection-lost';
 
 export type SignalingClientEvents = {
-  onJoined(role: 'first' | 'second'): void;
+  /** `turnCredentials` are secret: use them only to build the peer connection. */
+  onJoined(role: 'first' | 'second', turnCredentials?: TurnCredentials): void;
   onPeerJoined(): void;
   onPeerLeft(): void;
   /** `payload` is the opaque base64 ciphertext; `iv` is always present (the schema requires it); the type allows null only so the codec's own missing-iv check stays a second line of defence. */
@@ -112,7 +114,7 @@ export function connectToSignalingServer(connectionOptions: {
         return;
       }
       hasJoined = true;
-      events.onJoined(serverMessage.role);
+      events.onJoined(serverMessage.role, serverMessage.turn);
       return;
     }
     if (!hasJoined) {
