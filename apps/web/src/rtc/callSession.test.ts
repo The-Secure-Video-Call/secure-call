@@ -745,7 +745,7 @@ describe('call session: encrypted signaling fails closed', () => {
 
   describe('TURN credentials', () => {
     const turnCredentials = {
-      urls: ['turn:turn.example.com:3478?transport=udp'],
+      urls: ['turn:turn.securevideocall.com:3478?transport=udp'],
       username: '1700003600:AAECAwQFBgcICQoLDA0ODw',
       credential: 'AAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     };

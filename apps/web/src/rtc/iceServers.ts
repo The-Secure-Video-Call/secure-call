@@ -9,10 +9,39 @@ export const OWN_STUN_ICE_SERVERS: RTCIceServer[] = [
 ];
 
 /**
- * The ICE servers for a peer connection: the server's TURN (when it sent credentials) plus our
- * own STUN server. The result holds the TURN secret: never log, display or store it.
+ * The only TURN URLs we accept from the server's `joined` message: `turn:` or `turns:`, exactly
+ * our host, port 3478 or 5349, and optionally `?transport=udp|tcp`. Nothing else: no user info,
+ * path, other host, IP address or other port. A hostile signaling server must not be able to point
+ * browsers at any other host (LAN addresses included).
  */
-export function buildIceServers(turnCredentials: TurnCredentials | undefined): RTCIceServer[] {
+const ALLOWED_TURN_URL_PATTERN =
+  /^turns?:turn\.securevideocall\.com:(?:3478|5349)(?:\?transport=(?:udp|tcp))?$/;
+
+/**
+ * Keeps only the server-sent TURN URLs that point at our own TURN server. Returns undefined when
+ * none is left: the TURN entry then counts as missing. The result holds the TURN secret: never
+ * log, display or store it.
+ */
+export function keepOnlyOwnTurnServer(
+  turnCredentials: TurnCredentials | undefined,
+): TurnCredentials | undefined {
+  if (turnCredentials === undefined) return undefined;
+  const ownTurnUrls = turnCredentials.urls.filter((turnUrl) =>
+    ALLOWED_TURN_URL_PATTERN.test(turnUrl),
+  );
+  if (ownTurnUrls.length === 0) return undefined;
+  return { ...turnCredentials, urls: ownTurnUrls };
+}
+
+/**
+ * The ICE servers for a peer connection: the server's TURN (when it sent credentials for our own
+ * TURN server) plus our own STUN server. The result holds the TURN secret: never log, display or
+ * store it.
+ */
+export function buildIceServers(
+  serverSentTurnCredentials: TurnCredentials | undefined,
+): RTCIceServer[] {
+  const turnCredentials = keepOnlyOwnTurnServer(serverSentTurnCredentials);
   if (turnCredentials === undefined) return [...OWN_STUN_ICE_SERVERS];
   return [
     {
@@ -38,13 +67,14 @@ export type PeerConnectionSettings = {
  * a direct connection.
  */
 export function buildPeerConnectionSettings(
-  turnCredentials: TurnCredentials | undefined,
+  serverSentTurnCredentials: TurnCredentials | undefined,
   isPrivacyModeOn: boolean,
 ): PeerConnectionSettings | null {
   if (!isPrivacyModeOn) {
-    return { iceServers: buildIceServers(turnCredentials), iceTransportPolicy: 'all' };
+    return { iceServers: buildIceServers(serverSentTurnCredentials), iceTransportPolicy: 'all' };
   }
-  if (turnCredentials === undefined || turnCredentials.urls.length === 0) return null;
+  const turnCredentials = keepOnlyOwnTurnServer(serverSentTurnCredentials);
+  if (turnCredentials === undefined) return null;
   return {
     iceServers: [
       {
