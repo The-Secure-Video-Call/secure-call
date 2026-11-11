@@ -13,6 +13,11 @@ permissions:
   contents: read
   issues: write
 
+# One run at a time, so a manual run during the scheduled one cannot open a second issue.
+concurrency:
+  group: contract-copy-check
+  cancel-in-progress: false
+
 jobs:
   compare:
     runs-on: ubuntu-latest
@@ -65,14 +70,22 @@ jobs:
             echo
             echo "**What differs**"
             echo
+            # In a code block, so a backend file name cannot mention people, link issues or show a
+            # link. Every line starts with "- ", so no name can close the block.
+            echo "~~~"
             echo "$changed_files"
+            echo "~~~"
             echo
             echo "**To update**: run \`pnpm protocol:sync\`, check that \`pnpm test\` passes (the zod schemas may need to change too), and open a PR."
             echo
             echo "_Opened by the weekly contract copy check (\`.github/workflows/contract-copy-check.yml\`)._"
           } > issue-body.md
-          open_issue_number=$(gh issue list --state open --search "in:title \"$issue_title\"" --json number,title \
-            --jq "map(select(.title == \"$issue_title\")) | first | .number // empty")
+          # Only an issue opened with this repository's GITHUB_TOKEN counts: the repository is public,
+          # so anyone can open one with the same title, and the weekly notice must not disappear into it.
+          issue_author="app/github-actions"
+          open_issue_number=$(gh issue list --state open \
+            --search "in:title \"$issue_title\" author:$issue_author" --json number,title,author \
+            --jq "map(select(.title == \"$issue_title\" and .author.login == \"$issue_author\")) | first | .number // empty")
           if [ -n "$open_issue_number" ]; then
             gh issue comment "$open_issue_number" --body-file issue-body.md
             echo "Commented on issue #$open_issue_number"
