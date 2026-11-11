@@ -1,9 +1,12 @@
-// Which SRTP cipher protects the media of a call (ASVS 5.0 V11.3.2). Browsers keep
-// AES_CM_128_HMAC_SHA1_80 (CTR mode, HMAC-SHA1) enabled next to the AEAD-GCM profiles, so a call
+// Which SRTP cipher protects the media of a call (ASVS 5.0 V11.3.2). Browsers report the IANA
+// DTLS-SRTP profile names (`SRTP_...`) and keep SRTP_AES128_CM_HMAC_SHA1_80 (CTR mode, HMAC-SHA1) enabled next to the AEAD-GCM profiles, so a call
 // could silently use it. The end-to-end test reads the transport stats and judges them here.
 
 /** The only SRTP ciphers ASVS Appendix C approves (AES-GCM). */
-export const APPROVED_SRTP_CIPHERS: readonly string[] = ['AEAD_AES_128_GCM', 'AEAD_AES_256_GCM'];
+export const APPROVED_SRTP_CIPHERS: readonly string[] = [
+  'SRTP_AEAD_AES_128_GCM',
+  'SRTP_AEAD_AES_256_GCM',
+];
 
 export type SrtpCipherVerdict =
   /** Every transport that reports a cipher uses an approved one. */

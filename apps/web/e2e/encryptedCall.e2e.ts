@@ -17,6 +17,8 @@ import {
 } from '@playwright/test';
 import { judgeSrtpCipher } from './srtpCipher.ts';
 
+/** Documented browser-forced exception (docs/security-review.md, V11.3.2). */
+const CHROMIUM_FORCED_SRTP_CIPHER = 'SRTP_AES128_CM_HMAC_SHA1_80';
 const WAITING_TEXT = 'Waiting for the other person to join…';
 const CONNECTED_TEXT = 'Connected, not verified yet';
 const VERIFIED_TEXT = 'Connected and verified';
@@ -188,11 +190,12 @@ async function readCallHistory(person: Person): Promise<CallHistory> {
 }
 
 /**
- * The SRTP cipher of the person's current call must be AES-GCM (ASVS V11.3.2). A browser that
- * reports no `srtpCipher` fails here too: that gap has to be recorded in docs/security-review.md
- * as a browser-forced exception, not passed silently.
+ * The SRTP cipher of the person's current call (ASVS V11.3.2). Firefox must report AES-GCM.
+ * Chromium is the DOCUMENTED EXCEPTION: it negotiates SRTP_AES128_CM_HMAC_SHA1_80 and a web page
+ * cannot require GCM. It is pinned exactly, so the test fails if Chromium changes in either
+ * direction; then docs/security-review.md (V11.3.2, next to V11.4.1) must be updated.
  */
-async function expectSrtpCipherIsApproved(person: Person) {
+async function expectSrtpCipher(person: Person, browserName: string) {
   const statsEntries = await person.page.evaluate(async () => {
     const connections = (window as unknown as { callPeerConnections: RTCPeerConnection[] })
       .callPeerConnections;
@@ -202,7 +205,14 @@ async function expectSrtpCipherIsApproved(person: Person) {
     return [...(await currentConnection.getStats()).values()] as Record<string, unknown>[];
   });
   const verdict = judgeSrtpCipher(statsEntries);
-  expect(verdict, `${person.name}'s SRTP cipher`).toMatchObject({ status: 'approved' });
+  const message = `${person.name}'s SRTP cipher: ${verdict.ciphers.join(', ') || 'none reported'}`;
+  if (browserName === 'chromium') {
+    // Documented browser-forced exception: exactly this cipher, nothing else.
+    expect(verdict.status, message).toBe('rejected');
+    expect(verdict.ciphers, message).toEqual([CHROMIUM_FORCED_SRTP_CIPHER]);
+  } else {
+    expect(verdict.status, message).toBe('approved');
+  }
 }
 
 async function expectRemoteVideoPlaying(person: Person) {
@@ -323,7 +333,7 @@ test('@every-browser two people complete an encrypted call, verify it and hang u
   for (const person of [alice, bob]) {
     await expect(callStatus(person)).toHaveText(CONNECTED_TEXT);
     await expectRemoteVideoPlaying(person);
-    await expectSrtpCipherIsApproved(person);
+    await expectSrtpCipher(person, browserName);
   }
 
   // The same safety code on both sides, as emoji (the default) and as numbers.
