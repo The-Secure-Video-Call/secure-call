@@ -78,6 +78,7 @@ No accounts, no installs: one person creates a call, shares a link, the other op
 - **Signaling server:** the derived room ID, both IP addresses, when the call starts and ends, and the size and timing of the encrypted messages.
 - **TURN relay (when used):** both IP addresses, call length, and bandwidth. It cannot see the content.
 - **Database (future accounts only):** account details a user gives us. Never room IDs, call times, IP addresses or message contents.
+- **Logs outside the apps:** the reverse proxy in front of the signaling server (Nginx Proxy Manager) keeps no access log for `signal.securevideocall.com` (backend README, setup step 4); its error log can still name an address when a connection fails. The static host (ServerByt's shared Apache) and the CDN in front of it (StackCDN) keep their own access logs, with IP addresses, under the hosting company's retention: outside this project's control.
 - **Nobody** sees: video, audio, chat, the room secret, or the safety code.
 
 ### 3.4 The web app trust problem
@@ -266,7 +267,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 - [ ] Domain + VPS (any provider; 2 vCPU / 2 GB RAM is plenty to start; TURN bandwidth is the main cost)
 - [ ] `docker compose up` brings up Caddy (static site + TLS), signaling, and coturn
 - [ ] Open firewall: 443/tcp, 3478/udp+tcp, 5349/tcp, plus the TURN relay UDP port range
-- [ ] Health check endpoint and uptime monitoring (no personal data in metrics)
+- [x] Health check endpoint and uptime monitoring (no personal data in metrics): `.github/workflows/uptime.yml`
 - [ ] Deploy workflow from GitHub Actions on tagged releases
 
 **Demo:** public URL; call a friend on another network.
