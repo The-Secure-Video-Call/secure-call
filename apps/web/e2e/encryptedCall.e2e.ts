@@ -15,6 +15,7 @@ import {
   type Page,
   type WebSocketRoute,
 } from '@playwright/test';
+import { judgeSrtpCipher } from './srtpCipher.ts';
 
 const WAITING_TEXT = 'Waiting for the other person to join…';
 const CONNECTED_TEXT = 'Connected, not verified yet';
@@ -86,6 +87,9 @@ async function newPerson(browser: Browser, browserName: string, name: string): P
       remoteVideoFrames: false,
     };
     (window as unknown as { callHistory: CallHistory }).callHistory = history;
+    const callPeerConnections: RTCPeerConnection[] = [];
+    (window as unknown as { callPeerConnections: RTCPeerConnection[] }).callPeerConnections =
+      callPeerConnections;
     const NativePeerConnection = window.RTCPeerConnection;
     const probedCertificates = new Set<RTCCertificate>();
     const certificatesUsed = new Set<RTCCertificate>();
@@ -106,6 +110,7 @@ async function newPerson(browser: Browser, browserName: string, name: string): P
           return;
         }
         history.peerConnections += 1;
+        callPeerConnections.push(this);
         const [certificate, ...otherCertificates] = configuration.certificates ?? [];
         if (
           certificate === undefined ||
@@ -180,6 +185,24 @@ async function readCallHistory(person: Person): Promise<CallHistory> {
   return person.page.evaluate(
     () => (window as unknown as { callHistory: CallHistory }).callHistory,
   );
+}
+
+/**
+ * The SRTP cipher of the person's current call must be AES-GCM (ASVS V11.3.2). A browser that
+ * reports no `srtpCipher` fails here too: that gap has to be recorded in docs/security-review.md
+ * as a browser-forced exception, not passed silently.
+ */
+async function expectSrtpCipherIsApproved(person: Person) {
+  const statsEntries = await person.page.evaluate(async () => {
+    const connections = (window as unknown as { callPeerConnections: RTCPeerConnection[] })
+      .callPeerConnections;
+    // Exactly one call connection, and it is connected: otherwise we might judge the wrong one.
+    const [currentConnection] = connections;
+    if (connections.length !== 1 || currentConnection?.connectionState !== 'connected') return [];
+    return [...(await currentConnection.getStats()).values()] as Record<string, unknown>[];
+  });
+  const verdict = judgeSrtpCipher(statsEntries);
+  expect(verdict, `${person.name}'s SRTP cipher`).toMatchObject({ status: 'approved' });
 }
 
 async function expectRemoteVideoPlaying(person: Person) {
@@ -300,6 +323,7 @@ test('@every-browser two people complete an encrypted call, verify it and hang u
   for (const person of [alice, bob]) {
     await expect(callStatus(person)).toHaveText(CONNECTED_TEXT);
     await expectRemoteVideoPlaying(person);
+    await expectSrtpCipherIsApproved(person);
   }
 
   // The same safety code on both sides, as emoji (the default) and as numbers.

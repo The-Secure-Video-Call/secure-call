@@ -728,6 +728,10 @@ fingerprint)`.
   - **Fix:** in the Chromium and Firefox end-to-end calls, assert that `getStats()` reports an
     `srtpCipher` of `AEAD_AES_128_GCM` or `AEAD_AES_256_GCM`. Otherwise record it as a
     browser-forced exception, as V11.4.1 does for TURN.
+  - **Done in code, awaiting CI:** `apps/web/e2e/encryptedCall.e2e.ts` now makes both people
+    assert the cipher (judged by `e2e/srtpCipher.ts`, unit-tested). A browser that reports no
+    `srtpCipher` fails the test; if CI shows that for Firefox or Chromium, record the browser and
+    reason here as a browser-forced exception, next to V11.4.1.
 - **V11.2.3, V11.6.1:** the site's TLS certificate is RSA-2048, with an RSA PKCS#1 v1.5 signature
   chain. The signal host already uses ECDSA.
   - **Fix:** an ECDSA P-256 certificate for the static host, which fixes both.
