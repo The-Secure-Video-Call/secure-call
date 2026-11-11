@@ -112,7 +112,7 @@ A web app is only as trustworthy as the JavaScript the server sends. If someone 
 | Validation | **Pydantic 2** on the server (source of truth) + **zod** in the browser | Both are tested against the same JSON Schema and example messages |
 | TURN/STUN | **coturn** (self-hosted) | Industry standard, supports time-limited credentials |
 | Static hosting / CDN | **Shared Apache host** (ServerByt) behind **StackCDN** | Serves the built web app; `.htaccess` carries the CSP and security headers; deployed from CI over FTPS |
-| Reverse proxy / TLS | **Nginx Proxy Manager** on a separate small machine on the home LAN, with Let's Encrypt certificates | Terminates TLS for `signal.securevideocall.com` and forwards plain HTTP to Daphne on the Pi (TLS on that hop is planned: backend#59) |
+| Reverse proxy / TLS | **Nginx Proxy Manager** on a separate small machine on the home LAN, with Let's Encrypt certificates | Terminates TLS for `signal.securevideocall.com` and forwards plain HTTP to Daphne on the Pi (TLS on that hop is planned: [secure-call-backend#79](https://github.com/The-Secure-Video-Call/secure-call-backend/issues/79)) |
 | Deployment | **Docker Compose on a Raspberry Pi** (Daphne, coturn, PostgreSQL); the backend image comes from GHCR, pulled by the Pi | No inbound access from GitHub; see [docs/architecture.md](docs/architecture.md) for every host, port and flow |
 | Repos | **secure-call** (pnpm workspaces: web client + zod protocol package) and **secure-call-backend** (uv) | Node is only the web client's build tool; nothing in production runs on Node |
 | Tests | **Vitest** (unit) + **Playwright** (two-browser end-to-end calls with fake camera); **pytest** for the server | Real call tests in CI without real hardware |
