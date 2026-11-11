@@ -78,7 +78,9 @@ It fails unless all of this holds:
 - `index.html` loads nothing that is not in the release;
 - every response carries exactly the security headers that `.htaccess` sets (`.htaccess` itself
   is not served, so its headers are checked instead), and none sends `Refresh`;
-- `index.html` is never cached as `immutable`.
+- `index.html` is never cached as `immutable`;
+- the release's SBOM is CycloneDX and attested like `SHA256SUMS`. Only a release whose commit's
+  `deploy-web.yml` does not publish one may lack it, and the script says so.
 
 Anything the script can't read fails the check, instead of being skipped.
 
@@ -129,3 +131,45 @@ node scripts/verify-deployed.mjs --sums my-SHA256SUMS --commit <commit>
   their old headers until it is purged. The check reports that as a mismatch.
 
 Closing the first gap needs an installable app with signed releases (PLAN.md §9, later).
+
+## What the app is made of (SBOM)
+
+Every `web-<commit>` release since SBOMs were added (#106) also has `sbom.cdx.json`, a CycloneDX
+1.6 SBOM of the production dependencies: every third-party package bundled into the app (today
+react, react-dom, scheduler and zod), with its version, purl, registry URL and the SHA-512 from
+`pnpm-lock.yaml`. The deploy workflow refuses to accept a release of its commit without it.
+
+- **How it is made:** by the deploy workflow's `sbom` job, from the lockfile at that commit alone
+  (`pnpm sbom --lockfile-only --prod`). Nothing is installed for it. The project's pnpm 10 has no
+  `sbom` command, so this one command runs pnpm 11.28.9, pinned by its hash. The random
+  `serialNumber` and the `timestamp` are removed, so the same commit always gives the same file.
+- **Attested with `SHA256SUMS`:** one attestation covers both files, so the check is the same
+  (`node scripts/verify-deployed.mjs` runs it for you):
+
+```sh
+curl -fsSLO https://github.com/The-Secure-Video-Call/secure-call/releases/download/web-<commit>/sbom.cdx.json
+gh attestation verify sbom.cdx.json --repo The-Secure-Video-Call/secure-call \
+  --signer-workflow The-Secure-Video-Call/secure-call/.github/workflows/deploy-web.yml \
+  --source-ref refs/heads/main --source-digest <full 40-character commit> \
+  --deny-self-hosted-runners
+```
+
+- **Or make it yourself** in a checkout of the commit (Node with corepack, and jq), and compare.
+  The pnpm version and its hash come from the workflow. The empty `HOME` gives corepack a fresh
+  cache, so it checks the hash, and leaves out your own npm settings: another registry would
+  change the URLs in the SBOM.
+
+```sh
+sbom_pnpm="$(sed -n 's/^ *SBOM_PNPM: *//p' .github/workflows/deploy-web.yml)"  # pnpm@<version>+sha512.<hash>
+env -i PATH="$PATH" HOME="$(mktemp -d)" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+  corepack "$sbom_pnpm" sbom --pm-on-fail=ignore --lockfile-only --prod --sbom-format cyclonedx \
+  --sbom-spec-version 1.6 --sbom-type application \
+  | jq 'del(.serialNumber, .metadata.timestamp)' > my-sbom.cdx.json
+cmp my-sbom.cdx.json sbom.cdx.json
+```
+
+- **Limits:** it lists what the lockfile pins, not what the bundler kept of each package. Build
+  tools (Vite and its plugins, TypeScript) are not in it, though the lockfile pins them and
+  `pnpm audit` checks them. It has no licenses for the dependencies, which would need the
+  packages themselves. Releases of commits from before SBOMs have none, and a published release
+  cannot get one.

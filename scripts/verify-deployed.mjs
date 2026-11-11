@@ -4,7 +4,8 @@
 // uploaded, attested as made by deploy-web.yml on main. This script takes the newest one (or the
 // one named with --release), checks that its tag, commit and hashes belong together, that the
 // commit is on main and (with the GitHub CLI, gh) that the attestation names that workflow, main
-// and that commit, then fetches the live site and checks that:
+// and that commit, and the same for the release's SBOM (sbom.cdx.json; only releases of commits
+// from before SBOMs may lack one, which is reported), then fetches the live site and checks that:
 //   - index.html and every file under assets/ hash exactly as listed;
 //   - index.html loads nothing that is not in the release (a script added by a host fails);
 //   - every response carries the security headers apps/web/public/.htaccess sets at the
@@ -32,6 +33,7 @@ const ASSET_PATH = /^assets\/[A-Za-z0-9_-]+\.[a-z0-9]+$/;
 const OPTION_NAMES = new Set(['--release', '--site', '--sums', '--commit']);
 const FLAG_NAMES = new Set(['--skip-provenance']);
 const SIGNER_WORKFLOW = `${REPOSITORY}/.github/workflows/deploy-web.yml`;
+const SBOM_NAME = 'sbom.cdx.json';
 // The headers .htaccess sets on every response today (PLAN.md 3.5). A release commit whose
 // .htaccess sets fewer is refused, so a reformatted or truncated file can never drop one from
 // the comparison without anyone noticing.
@@ -80,6 +82,19 @@ export function parseChecksums(checksumsText) {
   if (!hashesByPath.has('index.html')) throw new Error('SHA256SUMS lists no index.html');
   if (!hashesByPath.has('.htaccess')) throw new Error('SHA256SUMS lists no .htaccess');
   return hashesByPath;
+}
+
+/** The number of components in a CycloneDX JSON SBOM. Anything else throws. */
+export function countSbomComponents(sbomText) {
+  let sbom;
+  try {
+    sbom = JSON.parse(sbomText);
+  } catch {
+    throw new Error(`${SBOM_NAME} is not JSON`);
+  }
+  if (sbom?.bomFormat !== 'CycloneDX' || !Array.isArray(sbom.components))
+    throw new Error(`${SBOM_NAME} is not a CycloneDX SBOM`);
+  return sbom.components.length;
 }
 
 /**
@@ -284,7 +299,12 @@ async function findRelease(fetchFunction, requestedTag) {
   const checksumsUrl = `https://github.com/${REPOSITORY}/releases/download/${tag}/SHA256SUMS`;
   if (checksumsAssets.length !== 1 || checksumsAssets[0].browser_download_url !== checksumsUrl)
     throw new Error(`${tag} has no single SHA256SUMS at ${checksumsUrl}`);
-  return { tag, commit, checksumsUrl };
+  // At most one SBOM, at its own address (whether it may be missing is checked in checkSbom).
+  const sbomAssets = release.assets.filter((asset) => asset.name === SBOM_NAME);
+  const sbomUrl = `https://github.com/${REPOSITORY}/releases/download/${tag}/${SBOM_NAME}`;
+  if (sbomAssets.length > 1 || sbomAssets.some((asset) => asset.browser_download_url !== sbomUrl))
+    throw new Error(`${tag} has more than one ${SBOM_NAME}, or one that is not at ${sbomUrl}`);
+  return { tag, commit, checksumsUrl, sbomUrl: sbomAssets.length === 1 ? sbomUrl : null };
 }
 
 /**
@@ -310,12 +330,15 @@ async function checkCommitIsOnMain(fetchFunction, commit) {
   if (!isOnMain) throw new Error(`commit ${commit} is not on main`);
 }
 
-/** The `gh attestation verify` arguments that tie SHA256SUMS to deploy-web.yml, main and a commit. */
-export function attestationArguments(checksumsPath, commit) {
+/**
+ * The `gh attestation verify` arguments that tie a release file (SHA256SUMS or the SBOM) to
+ * deploy-web.yml, main and a commit.
+ */
+export function attestationArguments(filePath, commit) {
   return [
     'attestation',
     'verify',
-    checksumsPath,
+    filePath,
     '--repo',
     REPOSITORY,
     '--signer-workflow',
@@ -337,16 +360,16 @@ function runGitHubCli(ghArguments) {
 }
 
 /**
- * The release's SHA256SUMS must carry an attestation signed for deploy-web.yml on main at its
- * commit: a release made any other way (another workflow, someone with write access), or a
- * genuine SHA256SUMS of another commit attached to this release, fails.
+ * A release file (SHA256SUMS, or the SBOM) must carry an attestation signed for deploy-web.yml on
+ * main at the release's commit: a release made any other way (another workflow, someone with
+ * write access), or a genuine file of another commit attached to this release, fails.
  */
-function checkProvenance(runGh, checksumsBytes, commit) {
+function checkProvenance(runGh, fileName, fileBytes, commit) {
   const folder = mkdtempSync(join(tmpdir(), 'verify-deployed-'));
   try {
-    const checksumsPath = join(folder, 'SHA256SUMS');
-    writeFileSync(checksumsPath, checksumsBytes);
-    const result = runGh(attestationArguments(checksumsPath, commit));
+    const filePath = join(folder, fileName);
+    writeFileSync(filePath, fileBytes);
+    const result = runGh(attestationArguments(filePath, commit));
     if (!result.isInstalled)
       throw new Error(
         'checking who made the release needs the GitHub CLI (gh), signed in. Install it, or ' +
@@ -354,12 +377,38 @@ function checkProvenance(runGh, checksumsBytes, commit) {
       );
     if (result.exitCode !== 0)
       throw new Error(
-        `SHA256SUMS is not attested by deploy-web.yml on main for ${commit}: ` +
+        `${fileName} is not attested by deploy-web.yml on main for ${commit}: ` +
           result.output.trim().slice(-300),
       );
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
+}
+
+/**
+ * The release's SBOM must be a CycloneDX SBOM attested like SHA256SUMS. It says what the app is
+ * made of; the site is checked against SHA256SUMS, not against the SBOM. A release may lack one
+ * only if deploy-web.yml at its commit does not publish one (a commit from before SBOMs): else
+ * it was made some other way, or with its SBOM left out. Returns the line to print.
+ */
+async function checkSbom({ fetchFunction, runGh, release, isProvenanceChecked }) {
+  if (release.sbomUrl === null) {
+    const workflowUrl = `https://raw.githubusercontent.com/${REPOSITORY}/${release.commit}/.github/workflows/deploy-web.yml`;
+    const workflowText = await (await fetchOk(fetchFunction, workflowUrl)).text();
+    if (workflowText.includes(SBOM_NAME))
+      throw new Error(
+        `${release.tag} has no ${SBOM_NAME}, but deploy-web.yml at its commit publishes one`,
+      );
+    return '  NOTE     no SBOM in this release (its commit is from before SBOMs were published)';
+  }
+  const sbomBytes = new Uint8Array(
+    await (await fetchOk(fetchFunction, release.sbomUrl)).arrayBuffer(),
+  );
+  const componentCount = countSbomComponents(new TextDecoder().decode(sbomBytes));
+  if (!isProvenanceChecked)
+    return `  OK       ${SBOM_NAME}: CycloneDX SBOM of ${componentCount} components`;
+  checkProvenance(runGh, SBOM_NAME, sbomBytes, release.commit);
+  return `  OK       ${SBOM_NAME}: CycloneDX SBOM of ${componentCount} components, attested the same way`;
 }
 
 export async function main(
@@ -387,7 +436,11 @@ export async function main(
     const hashesByPath = parseChecksums(new TextDecoder().decode(checksumsBytes));
     await checkCommitIsOnMain(fetchFunction, release.commit);
     const isProvenanceChecked = !isLocalRebuild && !options['--skip-provenance'];
-    if (isProvenanceChecked) checkProvenance(runGh, checksumsBytes, release.commit);
+    if (isProvenanceChecked) checkProvenance(runGh, 'SHA256SUMS', checksumsBytes, release.commit);
+
+    const sbomSummary = isLocalRebuild
+      ? null
+      : await checkSbom({ fetchFunction, runGh, release, isProvenanceChecked });
 
     const htaccessUrl = `https://raw.githubusercontent.com/${REPOSITORY}/${release.commit}/apps/web/public/.htaccess`;
     const htaccessBytes = new Uint8Array(
@@ -410,6 +463,7 @@ export async function main(
     });
     say(`Release ${release.tag} (commit ${release.commit}) against ${siteUrl}:`);
     if (isProvenanceChecked) say('  OK       attested by deploy-web.yml on main for this commit');
+    if (sbomSummary !== null) say(sbomSummary);
     for (const item of passed) say(`  OK       ${item}`);
     for (const problem of problems) say(`  MISMATCH ${problem}`);
     if (problems.length > 0) {
