@@ -816,6 +816,10 @@ postgres` line (it overrides `.env`), the `depends_on` and the `postgres` servic
     - an SBOM with each image and each web release;
     - an image scan in CI;
     - `update.sh` checking the image's attestation or a pinned digest.
+  - **Status:** the web release SBOM is fixed in #106. Each `web-<commit>` release has
+    `sbom.cdx.json` (CycloneDX, from the lockfile), attested with `SHA256SUMS` and checked by
+    `verify-deployed.mjs` (`.github/workflows/deploy-web.yml`, `SECURITY.md`). The image SBOM, the
+    image scan and `update.sh` are still open in secure-call-backend.
 
 **Logging and errors**
 
