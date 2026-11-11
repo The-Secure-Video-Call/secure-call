@@ -14,6 +14,8 @@ servers can see and 3.4 for the web app trust problem); the exact wire format an
 | Media       | WebRTC DTLS-SRTP between the two browsers           | Nobody else can see or hear the call.                  |
 | Metadata    | Room ID, IP addresses, timing and size of messages  | Minimised, not hidden. See "Not covered" below.        |
 
+Levels, retention and logging rules for each item: [data-inventory.md](data-inventory.md).
+
 ## Who we defend against
 
 ### 1. A network attacker

@@ -1,0 +1,80 @@
+# Data inventory
+
+Every kind of data secure-call handles, how sensitive it is, where it may go, how long it is kept
+and whether it may be logged. It extends the asset table in [threat-model.md](threat-model.md) and
+uses the facts in [PLAN.md](../PLAN.md) section 3.3. The wire format is in [protocol.md](protocol.md).
+
+## Protection levels
+
+| Level            | Meaning                                                                                                                             |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **Secret**       | Whoever holds it can join or read the call. Browser only. Never sent, stored or logged.                                             |
+| **Confidential** | Hides call contents or the connection. Leaves the browser only encrypted, never logged.                                             |
+| **Personal**     | Identifies or locates a person (IP addresses). Kept only where the call cannot work without it, and not logged by our own software. |
+| **Operational**  | Pseudonymous, short-lived protocol data. May leave the browser, must not be logged.                                                 |
+
+## Application data
+
+| Item                                    | Level        | May travel / be stored                                                                                                                                                                                                            | Kept for                                                                                      | May be logged?                                                                                  |
+| --------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Room secret                             | Secret       | URL fragment of the call link and browser memory. Never in a query string, a request, a server or `localStorage`. The link stays in the address bar and history while a call is open (threat model, "A leaked link").             | The session. The app replaces the history entry with the start page when the session ends.    | **Never.**                                                                                      |
+| `signalKey`                             | Secret       | A non-extractable `CryptoKey` in browser memory only.                                                                                                                                                                             | The session.                                                                                  | **Never.**                                                                                      |
+| Room ID (derived)                       | Operational  | Browser to signaling server (and through the proxy). In server memory only.                                                                                                                                                       | Until the room ends: 10 minutes alone, 4 hours in total. The server keeps no list of old IDs. | **Never** (backend and web app).                                                                |
+| Session ID (random, 16 bytes)           | Operational  | Only inside the encrypted `hello` and the AAD of encrypted messages; the server sees it only as part of opaque `payload`.                                                                                                         | One peer connection (new on every reconnect).                                                 | **Never.**                                                                                      |
+| Fingerprint commitment                  | Operational  | Inside the encrypted `hello` only.                                                                                                                                                                                                | One peer connection.                                                                          | **Never.**                                                                                      |
+| Safety code                             | Confidential | Shown on screen and read aloud by the people. Computed in the browser; never sent to any server.                                                                                                                                  | While it is on screen.                                                                        | **Never.**                                                                                      |
+| TURN credentials (username, credential) | Operational  | Server to browser in `joined`, browser to our TURN server. Valid for at most the time the room has left, at most 4 hours. The shared HMAC secret comes from an environment variable and is never committed.                       | Until expiry; not stored by the app.                                                          | The credential **never**. The backend logs only the fact that none was issued, with no address. |
+| SDP and ICE candidates                  | Personal     | Browser to browser through the signaling server, AES-256-GCM encrypted (server sees opaque `payload`). Candidates also reach the TURN/STUN server as connection traffic. In privacy mode a browser sends only `relay` candidates. | One peer connection.                                                                          | **Never** (they contain IP addresses and DTLS fingerprints).                                    |
+| Signaling payload                       | Confidential | Encrypted end to end; relayed, never parsed or stored.                                                                                                                                                                            | Not stored; forwarded and dropped.                                                            | **Never.**                                                                                      |
+| Media (video, audio)                    | Confidential | DTLS-SRTP between the browsers, or through the TURN relay still encrypted.                                                                                                                                                        | Not stored anywhere.                                                                          | Not applicable.                                                                                 |
+| Privacy-mode setting                    | Operational  | `localStorage` of the browser (a boolean).                                                                                                                                                                                        | Until the person clears it.                                                                   | Not logged.                                                                                     |
+
+## IP addresses at each hop
+
+IP addresses are **Personal** data. Each hop necessarily sees the address it talks to; what differs
+is whether anything is written down.
+
+| Hop                                        | Sees the address because                                                | Written down?                                                                                                                                                                                                                                   | Kept for                                                                              |
+| ------------------------------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Other participant                          | A direct WebRTC connection (privacy mode off) exposes it in candidates. | Not by the app.                                                                                                                                                                                                                                 | The call. Privacy mode hides your address from them.                                  |
+| Signaling server (backend)                 | It terminates the WebSocket behind the proxy.                           | Not logged. Only in-memory rate-limit counters, keyed by a per-process random HMAC of the address and dropped when their window (at most one hour) passes. Log lines contain no addresses, room IDs or payloads at the default `WARNING` level. | At most one hour, in memory; lost on restart.                                         |
+| Reverse proxy (Nginx Proxy Manager)        | It carries the signaling traffic.                                       | **Access log off** for the signaling host. The **error log can still name an address** when a connection fails.                                                                                                                                 | Per the proxy's own log rotation, which this project does not control from this repo. |
+| TURN relay (coturn)                        | It relays media when used (always in privacy mode).                     | Logging disabled (`no-stdout-log`, console output discarded); CI checks that coturn opens no log file.                                                                                                                                          | Not kept beyond live allocations.                                                     |
+| Static host (ServerByt shared Apache)      | It serves the web app files.                                            | Access logs with IP addresses, kept by the hosting company.                                                                                                                                                                                     | Under the host's retention. **Outside this project's control.**                       |
+| CDN in front of the static host (StackCDN) | It sits on the path of the web app files.                               | Its own access logs with IP addresses.                                                                                                                                                                                                          | Under the CDN's retention. **Outside this project's control.**                        |
+| Network on the path                        | It carries the packets.                                                 | Out of scope.                                                                                                                                                                                                                                   | Out of scope.                                                                         |
+
+## Logs
+
+| Log                             | Contains                                             | Address / room ID / payload?                                                           | Rule                                                                                                                                                       |
+| ------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Backend application log         | Timestamp, level, logger, message; default `WARNING` | None by design.                                                                        | Keep the level at `WARNING` and Daphne at `-v 0`: at `INFO` or lower, Daphne and Django may log addresses. Never log a room ID, payload or address.        |
+| Reverse proxy access log        | (disabled for the signaling host)                    | Would contain addresses.                                                               | Must stay off.                                                                                                                                             |
+| Reverse proxy error log         | Connection failures                                  | May contain an address.                                                                | Accepted, not controllable from here; do not copy its lines into issues or PRs.                                                                            |
+| coturn log                      | (disabled)                                           | Would contain addresses.                                                               | Must stay off; never enable `verbose`.                                                                                                                     |
+| Static host and CDN access logs | Request lines, IP addresses, user agents             | IP addresses.                                                                          | Third-party; documented in the privacy statement below. The fragment is never in a request, so the secret is never in these logs.                          |
+| GitHub Actions logs             | Build, test and deploy output                        | No call data: the workflows never handle room IDs, secrets or participants' addresses. | Never print a deploy credential or TURN secret; they come from GitHub secrets, which GitHub masks. Logs are retained per the repository's GitHub settings. |
+
+## GDPR note
+
+This is a description of what the project does, not legal advice, and it claims no certification or
+compliance audit.
+
+- **IP addresses are personal data** under the GDPR.
+- **What is processed:** the IP address of each participant, by the signaling server (in memory,
+  for rate limiting and to carry the connection), the TURN relay (to relay media), the proxy
+  (possibly in its error log), and the static host and CDN (in their access logs). The room ID,
+  call timing and size and timing of encrypted messages are pseudonymous metadata. The app
+  holds no accounts, names or call content.
+- **Basis:** legitimate interest (Art. 6(1)(f)) in operating and protecting the service: delivering
+  the call and limiting abuse. The processing is limited to what is necessary: no analytics, no
+  third-party scripts, no access logs on our own signaling and relay servers.
+- **How long:** in-memory counters for at most one hour; rooms and credentials for at most 4
+  hours; nothing is written to disk by our own software, except what the proxy's error log may
+  contain. The static host and CDN follow their own retention, which we do not control; operators
+  should check and document it before publishing a privacy statement.
+- **Rights:** because the server stores no data tied to a person, there is nothing to look up
+  or delete on request for our own components. Requests about the static host or CDN logs go to
+  those companies.
+- **Open points:** a published privacy statement, and the hosting companies' written retention
+  periods, are not part of this repository yet.

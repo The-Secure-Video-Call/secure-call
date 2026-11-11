@@ -80,6 +80,7 @@ No accounts, no installs: one person creates a call, shares a link, the other op
 - **Database (future accounts only):** account details a user gives us. Never room IDs, call times, IP addresses or message contents.
 - **Logs outside the apps:** the reverse proxy in front of the signaling server (Nginx Proxy Manager) keeps no access log for `signal.securevideocall.com` (backend README, setup step 4); its error log can still name an address when a connection fails. The static host (ServerByt's shared Apache) and the CDN in front of it (StackCDN) keep their own access logs, with IP addresses, under the hosting company's retention: outside this project's control.
 - **Nobody** sees: video, audio, chat, the room secret, or the safety code.
+- Per-item levels, retention and logging rules: [docs/data-inventory.md](docs/data-inventory.md).
 
 ### 3.4 The web app trust problem
 A web app is only as trustworthy as the JavaScript the server sends. If someone takes over the web host, they could ship code that leaks keys. Mitigations:
