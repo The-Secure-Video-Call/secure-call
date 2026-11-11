@@ -112,8 +112,9 @@ A web app is only as trustworthy as the JavaScript the server sends. If someone 
 | Database | **PostgreSQL 18** on the same machine as the backend (the Raspberry Pi while testing), connected but empty | Reserved for future user accounts; never holds call data; never reachable from the internet |
 | Validation | **Pydantic 2** on the server (source of truth) + **zod** in the browser | Both are tested against the same JSON Schema and example messages |
 | TURN/STUN | **coturn** (self-hosted) | Industry standard, supports time-limited credentials |
-| Reverse proxy / TLS | **Caddy** | Automatic HTTPS certificates, simple config |
-| Deployment | **Docker Compose** on one VPS (to start) | One `docker compose up` brings up everything |
+| Static hosting / CDN | **Shared Apache host** (ServerByt) behind **StackCDN** | Serves the built web app; `.htaccess` carries the CSP and security headers; deployed from CI over FTPS |
+| Reverse proxy / TLS | **Nginx Proxy Manager** on a separate small machine on the home LAN, with Let's Encrypt certificates | Terminates TLS for `signal.securevideocall.com` and forwards plain HTTP to Daphne on the Pi (TLS on that hop is planned: [secure-call-backend#79](https://github.com/The-Secure-Video-Call/secure-call-backend/issues/79)) |
+| Deployment | **Docker Compose on a Raspberry Pi** (Daphne, coturn, PostgreSQL); the backend image comes from GHCR, pulled by the Pi | No inbound access from GitHub; see [docs/architecture.md](docs/architecture.md) for every host, port and flow |
 | Repos | **secure-call** (pnpm workspaces: web client + zod protocol package) and **secure-call-backend** (uv) | Node is only the web client's build tool; nothing in production runs on Node |
 | Tests | **Vitest** (unit) + **Playwright** (two-browser end-to-end calls with fake camera); **pytest** for the server | Real call tests in CI without real hardware |
 | CI | **GitHub Actions** | Lint, type-check, test, build, security scans on every PR |
@@ -121,6 +122,9 @@ A web app is only as trustworthy as the JavaScript the server sends. If someone 
 ---
 
 ## 5. Repository layout
+
+Every host, port and communication flow of the deployment is listed in
+[docs/architecture.md](docs/architecture.md).
 
 Two repos in the GitHub organisation. The web client:
 

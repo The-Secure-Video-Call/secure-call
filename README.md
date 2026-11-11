@@ -2,7 +2,8 @@
 
 A secure 1-to-1 video calling web app. Media is peer-to-peer (WebRTC); the signaling server only
 relays opaque, end-to-end encrypted messages. The room secret lives only in the URL fragment.
-See [PLAN.md](PLAN.md) for the architecture and security design.
+See [PLAN.md](PLAN.md) for the architecture and security design, and
+[docs/architecture.md](docs/architecture.md) for every host, port and flow of the deployment.
 
 > Status: milestones M0–M4 (hardening) are done. The app is live at
 > [securevideocall.com](https://securevideocall.com).
