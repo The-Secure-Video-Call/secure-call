@@ -207,6 +207,13 @@ describe('stunOverUdp', () => {
     assert.deepEqual(await check(closed.port, 5000), { ok: false, reason: 'ECONNREFUSED' });
     assert.ok(Date.now() - started < 4000);
   });
+
+  test('fails, without crashing, when the host name does not resolve', async () => {
+    // .invalid never resolves (RFC 6761). The lookup error reaches connect's callback.
+    const result = await stunOverUdp({ host: 'turn.example.invalid', port: 3478, timeoutMs: 8000 });
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /^E[A-Z_]+$/);
+  });
 });
 
 /** A throwaway CA and leaf certificates, made with openssl (OpenSSL or LibreSSL). */
@@ -564,5 +571,22 @@ describe('main', () => {
       lines.join('\n'),
     );
     assert.ok(!lines.some((line) => /127\.0\.0\.1|::1/.test(line)), lines.join('\n'));
+  });
+
+  test('prints DOWN for both targets when the host name does not resolve', async () => {
+    const { failures, lines } = await run({
+      host: 'turn.example.invalid',
+      udpPort: 3478,
+      tlsPort: 5349,
+      timeoutMs: 8000,
+    });
+    assert.equal(failures, 2);
+    assert.deepEqual(
+      lines.filter((line) => /^(up: |DOWN:)/.test(line)),
+      [
+        'DOWN: turn:turn.example.invalid:3478 (STUN over UDP)',
+        'DOWN: turns:turn.example.invalid:5349 (STUN over TLS)',
+      ],
+    );
   });
 });

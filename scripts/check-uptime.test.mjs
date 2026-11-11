@@ -34,7 +34,8 @@ function stub(folder, name, body) {
 /**
  * Runs check-uptime.sh. `failingUrls`: URLs curl fails for. `turnLines`/`turnExit`: what the node
  * stand-in prints and exits with. `openIssues`: the open issues gh lists ({number, title,
- * author}); `issueBody`: what `gh issue view` returns. `listFails`: gh issue list fails.
+ * author}); `issueBody`: what `gh issue view` returns. `listFails`/`viewFails`: gh issue list
+ * or view fails.
  */
 function runCheck({
   failingUrls = [],
@@ -43,6 +44,7 @@ function runCheck({
   openIssues = [],
   issueBody = '',
   listFails = false,
+  viewFails = false,
   dryRun = false,
 } = {}) {
   const folder = mkdtempSync(join(tmpdir(), 'check-uptime-'));
@@ -74,7 +76,10 @@ function runCheck({
       '  previous=""; for arg in "$@"; do [ "$previous" = "--jq" ] && filter="$arg"; previous="$arg"; done',
       '  printf "%s" "$OPEN_ISSUES" | jq -r "$filter"',
       'fi',
-      'if [ "$1 $2" = "issue view" ]; then printf "%s" "$ISSUE_BODY"; fi',
+      'if [ "$1 $2" = "issue view" ]; then',
+      '  if [ "$GH_VIEW_FAILS" = 1 ]; then exit 1; fi',
+      '  printf "%s" "$ISSUE_BODY"',
+      'fi',
     ].join('\n'),
   );
   const result = spawnSync('bash', [SCRIPT], {
@@ -89,6 +94,7 @@ function runCheck({
       OPEN_ISSUES: JSON.stringify(openIssues),
       ISSUE_BODY: issueBody,
       GH_LIST_FAILS: listFails ? '1' : '0',
+      GH_VIEW_FAILS: viewFails ? '1' : '0',
       GH_LOG: ghLog,
       UPTIME_RETRY_SECONDS: '0',
       UPTIME_DRY_RUN: dryRun ? '1' : '0',
@@ -176,6 +182,26 @@ test('a failure already listed in the open issue is not reported again', () => {
     issueBody: 'Detected:\n\n- turn:turn.securevideocall.com:3478\n\nHelp.',
   });
   assert.deepEqual(changes(run), NO_CHANGES);
+});
+
+test('a body saved in the web editor (CRLF line ends) is not re-reported', () => {
+  const run = runCheck({
+    turnLines: [UDP_DOWN, TLS_UP, CERTIFICATE_OK],
+    openIssues: [{ number: 5, title: DOWN_TITLE, author: BOT }],
+    issueBody: 'Detected:\r\n\r\n- turn:turn.securevideocall.com:3478\r\n\r\nHelp.',
+  });
+  assert.deepEqual(changes(run), NO_CHANGES);
+});
+
+test('when the open issue cannot be read, the run fails and changes nothing', () => {
+  const run = runCheck({
+    turnLines: [UDP_DOWN, TLS_UP, CERTIFICATE_OK],
+    openIssues: [{ number: 5, title: DOWN_TITLE, author: BOT }],
+    viewFails: true,
+  });
+  assert.equal(run.status, 1);
+  assert.deepEqual(changes(run), NO_CHANGES);
+  assert.match(run.stdout, /Could not read issue #5/);
 });
 
 test('issues with our titles that someone else opened are ignored', () => {

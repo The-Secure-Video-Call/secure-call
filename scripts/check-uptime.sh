@@ -163,6 +163,8 @@ add_new_failures_to_issue() {
     echo "Could not read issue #$issue_number."
     return 1
   }
+  # A body saved in GitHub's web editor comes back with CRLF line ends.
+  issue_body="${issue_body//$'\r'/}"
   for url in "${failed_urls[@]}"; do
     if ! grep -qxF -- "- $url" <<<"$issue_body"; then new_targets+=("$url"); fi
   done

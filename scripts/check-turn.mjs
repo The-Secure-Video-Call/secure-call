@@ -107,7 +107,12 @@ export function stunOverUdp({ host, port, timeoutMs, transactionId = randomBytes
       }
       // Anything else is ignored; the timer decides.
     });
-    socket.connect(port, host, () => {
+    // A failed name lookup comes to this callback as its argument, not as an 'error' event.
+    socket.connect(port, host, (connectError) => {
+      if (connectError) {
+        finish({ ok: false, reason: errorReason(connectError) });
+        return;
+      }
       socket.send(bindingRequest(transactionId), (error) => {
         if (error) finish({ ok: false, reason: errorReason(error) });
       });
@@ -266,6 +271,11 @@ export function isEntryPoint(argvPath, moduleUrl) {
 if (isEntryPoint(process.argv[1], import.meta.url)) {
   // Failures are reported in the printed lines; the exit code is non-zero only if the check
   // itself broke, so check-uptime.sh can tell "TURN is down" from "the check did not run".
+  // A crash prints a fixed line, never Node's stack trace (its messages name addresses).
+  process.on('uncaughtException', () => {
+    console.error('check-turn.mjs crashed.');
+    process.exit(2);
+  });
   main().then(
     () => process.exit(0),
     () => {
