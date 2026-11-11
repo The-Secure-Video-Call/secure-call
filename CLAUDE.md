@@ -57,6 +57,9 @@ behind the backend's `main`.
 - Crypto code stays as small, pure, well-named functions in `apps/web/src/crypto/`.
 - Every change to crypto, signaling or room logic needs unit tests, including at least one
   negative test (tampered, replayed or oversized input is rejected).
+- Every change that adds, removes or alters a key, secret, algorithm or certificate (browser or
+  backend) updates the key-management policy and inventory in `SECURITY.md` in the same PR. Say in
+  the PR description that you checked it.
 
 ## The other repo
 
