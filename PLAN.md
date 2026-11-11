@@ -3,7 +3,8 @@
 A browser-based, 1-to-1 video calling app where **only the two people on the call can see and hear it**.
 No accounts, no installs: one person creates a call, shares a link, the other opens it.
 
-> Working name: `secure-call`. Rename freely.
+> Name: **Secure Video Call** (decided in #92). The repositories and packages keep their code
+> names, `secure-call`, `secure-call-backend` and `@secure-call/*`.
 
 ---
 
@@ -306,7 +307,7 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 
 | Decision | Options | Suggested default |
 |---|---|---|
-| Project name | — | `secure-call` placeholder |
+| Project name | Keep "Secure Call" / a new name | **Decided: Secure Video Call** (#92): it matches `securevideocall.com` and the GitHub organization, and "Secure Call" is already the name of other calling apps. Code names stay `secure-call` |
 | License | MIT (permissive) / AGPL-3.0 (forks must share source) | **Decided: AGPL-3.0-only** (see `LICENSE`) |
 | Hosting provider | Hetzner, DigitalOcean, AWS Lightsail, etc. | Any VPS with good bandwidth pricing |
 | Safety code format | Emoji / digits / words | Emoji, with digits as an accessible alternative |
