@@ -191,6 +191,53 @@ const CHECKED_HEADER_NAMES = [
   ...Object.keys(EXACT_HEADERS),
 ];
 
+/** Extensions the build emits besides index.html; each must be served with a UTF-8 charset. */
+const CHARSET_EXTENSIONS = ['.js', '.css'];
+
+/** Top-level charset directives: `AddDefaultCharset UTF-8` and `AddCharset utf-8 .js .css`. */
+export function checkCharsetDirectives(htaccessText: string): string[] {
+  const problems: string[] = [];
+  const defaultCharsets: string[] = [];
+  const charsetByExtension = new Map<string, string>();
+  let sectionDepth = 0;
+  for (const rawLine of htaccessText.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (line.startsWith('</')) {
+      sectionDepth = Math.max(0, sectionDepth - 1);
+      continue;
+    }
+    if (line.startsWith('<')) {
+      sectionDepth += 1;
+      continue;
+    }
+    const [directiveName = '', ...directiveWords] = line.split(/\s+/);
+    const lowerCaseName = directiveName.toLowerCase();
+    if (lowerCaseName === 'adddefaultcharset') {
+      defaultCharsets.push(
+        sectionDepth === 0 ? directiveWords.join(' ').toLowerCase() : 'in-section',
+      );
+    } else if (lowerCaseName === 'addcharset' && sectionDepth === 0) {
+      const [charsetName = '', ...extensions] = directiveWords;
+      // The last directive naming an extension wins in Apache, so do the same here.
+      for (const extension of extensions) {
+        charsetByExtension.set(extension.toLowerCase(), charsetName.toLowerCase());
+      }
+    } else if (lowerCaseName === 'addcharset') {
+      problems.push('AddCharset must not be inside a section');
+    }
+  }
+  if (defaultCharsets.length !== 1 || defaultCharsets[0] !== 'utf-8') {
+    problems.push('AddDefaultCharset UTF-8 must be set exactly once, at the top level');
+  }
+  for (const extension of CHARSET_EXTENSIONS) {
+    if (charsetByExtension.get(extension) !== 'utf-8') {
+      problems.push(`AddCharset utf-8 ${extension} is missing`);
+    }
+  }
+  return problems;
+}
+
 export function checkSecurityHeaders(htaccessText: string): string[] {
   const headerDirectives = readHeaderDirectives(htaccessText);
   const problems: string[] = [];
@@ -224,6 +271,7 @@ export function checkSecurityHeaders(htaccessText: string): string[] {
       problems.push(`${headerName}: must be "${EXACT_HEADERS[headerName]}"`);
     }
   }
+  problems.push(...checkCharsetDirectives(htaccessText));
   // An unset, edit or echo whose name is a pattern could change one of our headers.
   for (const directive of headerDirectives) {
     const isPattern = /[^a-z0-9-]/.test(directive.headerName);
