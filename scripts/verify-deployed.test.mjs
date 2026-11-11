@@ -2,10 +2,11 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import {
   attestationArguments,
+  countSbomComponents,
   main,
   parseChecksums,
   printable,
@@ -22,7 +23,25 @@ const TAG = 'web-aaaaaaaaaaaa';
 const SITE_ORIGIN = 'https://securevideocall.com';
 const API = 'https://api.github.com/repos/The-Secure-Video-Call/secure-call';
 const CHECKSUMS_URL = `https://github.com/The-Secure-Video-Call/secure-call/releases/download/${TAG}/SHA256SUMS`;
+const SBOM_URL = `https://github.com/The-Secure-Video-Call/secure-call/releases/download/${TAG}/sbom.cdx.json`;
+// What the deploy workflow publishes, cut down (pnpm sbom, CycloneDX).
+const SBOM = JSON.stringify({
+  bomFormat: 'CycloneDX',
+  specVersion: '1.6',
+  components: [
+    { type: 'library', name: 'react', version: '19.3.1', purl: 'pkg:npm/react@19.3.1' },
+    { type: 'library', name: 'zod', version: '4.6.7', purl: 'pkg:npm/zod@4.6.7' },
+  ],
+});
+const RELEASE_ASSETS = [
+  { name: 'SHA256SUMS', browser_download_url: CHECKSUMS_URL },
+  { name: 'sbom.cdx.json', browser_download_url: SBOM_URL },
+];
 const HTACCESS_URL = `https://raw.githubusercontent.com/The-Secure-Video-Call/secure-call/${COMMIT}/apps/web/public/.htaccess`;
+const WORKFLOW_URL = `https://raw.githubusercontent.com/The-Secure-Video-Call/secure-call/${COMMIT}/.github/workflows/deploy-web.yml`;
+// deploy-web.yml at the release commit, cut down: one that publishes an SBOM, and one from before.
+const WORKFLOW_WITH_SBOM = 'gh release create "$tag" SHA256SUMS sbom.cdx.json --verify-tag';
+const WORKFLOW_BEFORE_SBOM = 'gh release create "$tag" SHA256SUMS --verify-tag';
 const CSP = "default-src 'self'; script-src 'self'";
 const ALWAYS_SET_HEADERS = {
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
@@ -75,7 +94,9 @@ function releaseWithIndex(indexHtml) {
 
 /**
  * A fake fetch serving a release, the repository (tag, compare, .htaccess) and a site.
- * Every part can be overridden; `undefined` for a site file or header removes it.
+ * Every part can be overridden; `undefined` for a site file or header removes it, and `null`
+ * for the SBOM or the release commit's workflow leaves its address unanswered (404).
+ * `ghResult` is gh's answer for every file, or a function from the file's name to it.
  */
 function fakeWorld({
   site = {},
@@ -83,6 +104,8 @@ function fakeWorld({
   indexHeaders = {},
   assetHeaders = {},
   checksums,
+  sbom = SBOM,
+  workflow = WORKFLOW_WITH_SBOM,
   htaccess = HTACCESS,
   release = {},
   extraReleases = [],
@@ -102,7 +125,7 @@ function fakeWorld({
     tag_name: TAG,
     draft: false,
     target_commitish: COMMIT,
-    assets: [{ name: 'SHA256SUMS', browser_download_url: CHECKSUMS_URL }],
+    assets: RELEASE_ASSETS,
     ...release,
   };
   const json = (value) => JSON.stringify(value);
@@ -133,6 +156,8 @@ function fakeWorld({
     [CHECKSUMS_URL, checksums ?? checksumsFor(RELEASED_FILES)],
     [HTACCESS_URL, htaccess],
   ]);
+  if (sbom !== null) responses.set(SBOM_URL, sbom);
+  if (workflow !== null) responses.set(WORKFLOW_URL, workflow);
   const requested = [];
   const fetchFunction = async (url, options = {}) => {
     requested.push(url);
@@ -146,6 +171,11 @@ function fakeWorld({
         ...Object.fromEntries(
           Object.entries(ALWAYS_SET_HEADERS).map(([name, value]) => [name.toLowerCase(), value]),
         ),
+        'content-type': path.endsWith('.js')
+          ? 'text/javascript; charset=utf-8'
+          : path.endsWith('.css')
+            ? 'text/css; charset=utf-8'
+            : 'text/html; charset=utf-8',
         'cache-control': path === '/' ? 'no-cache' : 'public, max-age=31536000, immutable',
         ...siteHeaders,
         ...(path === '/' ? indexHeaders : assetHeaders),
@@ -160,11 +190,12 @@ function fakeWorld({
       ? new Response('missing', { status: 404 })
       : new Response(body, { status: 200 });
   };
-  // A fake gh: records each call with the SHA256SUMS file as it was when gh ran.
+  // A fake gh: records each call with the file it checked, as it was when gh ran.
   const ghCalls = [];
   const runGh = (ghArguments) => {
-    ghCalls.push({ ghArguments, checksums: readFileSync(ghArguments[2], 'utf8') });
-    return ghResult;
+    const fileName = basename(ghArguments[2]);
+    ghCalls.push({ ghArguments, fileName, content: readFileSync(ghArguments[2], 'utf8') });
+    return typeof ghResult === 'function' ? ghResult(fileName) : ghResult;
   };
   return { fetchFunction, requested, runGh, ghCalls };
 }
@@ -186,6 +217,31 @@ async function expectFailure(world, pattern, commandLineArguments = []) {
   assert.doesNotMatch(output, /serves exactly this release/);
 }
 
+// Charset (ASVS V4.1.1)
+
+test('index.html, JS and CSS without charset=utf-8 fail', async () => {
+  const cases = [
+    [
+      { indexHeaders: { 'content-type': 'text/html' } },
+      /index\.html: Content-Type is "text\/html"/,
+    ],
+    [
+      { indexHeaders: { 'content-type': 'text/html; charset=iso-8859-1' } },
+      /index\.html: Content-Type/,
+    ],
+    [
+      { assetHeaders: { 'content-type': 'text/javascript' } },
+      /assets\/index-AAA\.js: Content-Type/,
+    ],
+    [
+      { assetHeaders: { 'content-type': 'text/css; charset=latin1' } },
+      /assets\/index-BBB\.css: Content-Type/,
+    ],
+  ];
+  for (const [worldOptions, pattern] of cases)
+    await expectFailure(fakeWorld(worldOptions), pattern);
+});
+
 // Positive cases (each check below must fail when its input is changed).
 
 test('a site serving exactly the newest release, with its headers, passes', async () => {
@@ -198,26 +254,37 @@ test('a site serving exactly the newest release, with its headers, passes', asyn
   assert.match(output, /OK {7}index\.html caching/);
   assert.match(output, /serves exactly this release/);
   assert.match(output, /OK {7}attested by deploy-web\.yml on main for this commit/);
-  assert.doesNotMatch(output, /NOT checked/);
+  assert.match(
+    output,
+    /OK {7}sbom\.cdx\.json: CycloneDX SBOM of 2 components, attested the same way/,
+  );
+  assert.doesNotMatch(output, /NOT checked|NOTE/);
   assert.ok(world.requested.includes(`${API}/git/ref/tags/${TAG}`));
   assert.ok(world.requested.includes(`${API}/git/ref/heads/main`));
   assert.ok(world.requested.includes(`${API}/compare/${COMMIT}...${MAIN_COMMIT}?per_page=1`));
-  // gh checked exactly the released SHA256SUMS, for this commit, signed by deploy-web.yml on main.
-  assert.equal(world.ghCalls.length, 1);
-  const [{ ghArguments, checksums }] = world.ghCalls;
-  assert.deepEqual(ghArguments, attestationArguments(ghArguments[2], COMMIT));
-  assert.deepEqual(ghArguments.slice(3), [
-    '--repo',
-    'The-Secure-Video-Call/secure-call',
-    '--signer-workflow',
-    'The-Secure-Video-Call/secure-call/.github/workflows/deploy-web.yml',
-    '--source-ref',
-    'refs/heads/main',
-    '--source-digest',
-    COMMIT,
-    '--deny-self-hosted-runners',
-  ]);
-  assert.equal(checksums, checksumsFor(RELEASED_FILES));
+  // gh checked exactly the released SHA256SUMS and SBOM, for this commit, signed by
+  // deploy-web.yml on main.
+  assert.deepEqual(
+    world.ghCalls.map(({ fileName, content }) => [fileName, content]),
+    [
+      ['SHA256SUMS', checksumsFor(RELEASED_FILES)],
+      ['sbom.cdx.json', SBOM],
+    ],
+  );
+  for (const { ghArguments } of world.ghCalls) {
+    assert.deepEqual(ghArguments, attestationArguments(ghArguments[2], COMMIT));
+    assert.deepEqual(ghArguments.slice(3), [
+      '--repo',
+      'The-Secure-Video-Call/secure-call',
+      '--signer-workflow',
+      'The-Secure-Video-Call/secure-call/.github/workflows/deploy-web.yml',
+      '--source-ref',
+      'refs/heads/main',
+      '--source-digest',
+      COMMIT,
+      '--deny-self-hosted-runners',
+    ]);
+  }
 });
 
 test('negative: a release without a valid attestation fails, and needs gh to be checked', async () => {
@@ -240,8 +307,86 @@ test('--skip-provenance checks files and headers only, and says so', async () =>
   const { exitCode, output } = await run(world, ['--skip-provenance']);
   assert.equal(exitCode, 0, output);
   assert.equal(world.ghCalls.length, 0);
-  assert.doesNotMatch(output, /attested by/);
+  assert.doesNotMatch(output, /attested/);
+  assert.match(output, /OK {7}sbom\.cdx\.json: CycloneDX SBOM of 2 components$/m);
   assert.match(output, /Who made this release was NOT checked \(--skip-provenance\)/);
+});
+
+// The SBOM: if the release has one, it must be CycloneDX and attested like SHA256SUMS.
+
+test('a release of a commit from before SBOMs passes without one, and says so', async () => {
+  const world = fakeWorld({
+    release: { assets: RELEASE_ASSETS.slice(0, 1) },
+    workflow: WORKFLOW_BEFORE_SBOM,
+  });
+  const { exitCode, output } = await run(world);
+  assert.equal(exitCode, 0, output);
+  assert.match(
+    output,
+    /NOTE {5}no SBOM in this release \(its commit is from before SBOMs were published\)/,
+  );
+  assert.deepEqual(
+    world.ghCalls.map(({ fileName }) => fileName),
+    ['SHA256SUMS'],
+  );
+  assert.ok(world.requested.includes(WORKFLOW_URL));
+  assert.ok(!world.requested.includes(SBOM_URL));
+});
+
+test('negative: a release without the SBOM its commit publishes fails', async () => {
+  await expectFailure(
+    fakeWorld({ release: { assets: RELEASE_ASSETS.slice(0, 1) } }),
+    /web-aaaaaaaaaaaa has no sbom\.cdx\.json, but deploy-web\.yml at its commit publishes one/,
+  );
+  // Whether the commit publishes one must be known: an unreadable workflow fails too.
+  await expectFailure(
+    fakeWorld({ release: { assets: RELEASE_ASSETS.slice(0, 1) }, workflow: null }),
+    /Could not verify: .*deploy-web\.yml answered 404/,
+  );
+});
+
+test('negative: an SBOM that is not attested by deploy-web.yml for this commit fails', async () => {
+  const world = fakeWorld({
+    ghResult: (fileName) =>
+      fileName === 'sbom.cdx.json'
+        ? { isInstalled: true, exitCode: 1, output: 'no matching attestations' }
+        : { isInstalled: true, exitCode: 0, output: 'Verification succeeded!' },
+  });
+  await expectFailure(
+    world,
+    /sbom\.cdx\.json is not attested by deploy-web\.yml on main for a{40}: no matching attestations/,
+  );
+});
+
+test('negative: an SBOM that is not CycloneDX JSON fails, even with --skip-provenance', async () => {
+  for (const [sbom, pattern] of [
+    ['not json', /sbom\.cdx\.json is not JSON/],
+    ['null', /sbom\.cdx\.json is not a CycloneDX SBOM/],
+    [JSON.stringify({ spdxVersion: 'SPDX-2.3', packages: [] }), /is not a CycloneDX SBOM/],
+    [JSON.stringify({ bomFormat: 'CycloneDX' }), /is not a CycloneDX SBOM/],
+    [JSON.stringify({ bomFormat: 'CycloneDX', components: {} }), /is not a CycloneDX SBOM/],
+  ]) {
+    await expectFailure(fakeWorld({ sbom }), pattern);
+    await expectFailure(fakeWorld({ sbom }), pattern, ['--skip-provenance']);
+  }
+  assert.equal(countSbomComponents(SBOM), 2);
+});
+
+test('negative: an SBOM listed twice, at another address, or not downloadable fails', async () => {
+  const elsewhere = { name: 'sbom.cdx.json', browser_download_url: 'https://x.example/sbom' };
+  for (const assets of [
+    [...RELEASE_ASSETS, RELEASE_ASSETS[1]],
+    [RELEASE_ASSETS[0], elsewhere],
+  ]) {
+    await expectFailure(
+      fakeWorld({ release: { assets } }),
+      /has more than one sbom\.cdx\.json, or one that is not at/,
+    );
+  }
+  await expectFailure(
+    fakeWorld({ sbom: null }),
+    /Could not verify: .*sbom\.cdx\.json answered 404/,
+  );
 });
 
 test('the release named with --release passes', async () => {

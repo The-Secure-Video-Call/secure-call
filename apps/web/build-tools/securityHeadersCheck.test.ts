@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { checkSecurityHeaders } from './securityHeadersCheck.ts';
+import { checkCharsetDirectives, checkSecurityHeaders } from './securityHeadersCheck.ts';
 
 const realHtaccessText = readFileSync(new URL('../public/.htaccess', import.meta.url), 'utf8');
 
@@ -163,5 +163,32 @@ describe('checkSecurityHeaders', () => {
     expect(
       checkSecurityHeaders(`${realHtaccessText}\nHeader always unset ^X-.*\n`).join(),
     ).toContain('could change a header');
+  });
+});
+
+describe('charset directives', () => {
+  it('are in the real public/.htaccess', () => {
+    expect(checkCharsetDirectives(realHtaccessText)).toEqual([]);
+    expect(checkSecurityHeaders(realHtaccessText)).toEqual([]);
+  });
+
+  it('fail when AddDefaultCharset is missing or not UTF-8', () => {
+    const withoutDefault = realHtaccessText.replace('AddDefaultCharset UTF-8\n', '');
+    expect(checkCharsetDirectives(withoutDefault).join()).toContain('AddDefaultCharset');
+    const wrongDefault = realHtaccessText.replace(
+      'AddDefaultCharset UTF-8',
+      'AddDefaultCharset ISO-8859-1',
+    );
+    expect(checkCharsetDirectives(wrongDefault).join()).toContain('AddDefaultCharset');
+  });
+
+  it('fail when .js or .css lacks AddCharset utf-8, or another charset comes later', () => {
+    const withoutCss = realHtaccessText.replace(
+      'AddCharset utf-8 .js .css',
+      'AddCharset utf-8 .js',
+    );
+    expect(checkCharsetDirectives(withoutCss).join()).toContain('.css');
+    const overridden = `${realHtaccessText}\nAddCharset iso-8859-1 .js\n`;
+    expect(checkCharsetDirectives(overridden).join()).toContain('.js');
   });
 });

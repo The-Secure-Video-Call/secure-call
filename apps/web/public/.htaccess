@@ -7,6 +7,12 @@
 
 Options -Indexes
 
+# Say UTF-8 in the Content-Type of the HTML, JS and CSS the build emits (ASVS V4.1.1), not only in
+# <meta charset>. The build check (securityHeadersCheck.ts) and scripts/verify-deployed.mjs
+# both require this. Add the extension here if the build ever emits .svg, .json or .webmanifest.
+AddDefaultCharset UTF-8
+AddCharset utf-8 .js .css
+
 Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
 Header always set Content-Security-Policy "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'none'; connect-src 'self' wss://signal.securevideocall.com; worker-src 'none'; frame-src 'none'; manifest-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'; upgrade-insecure-requests"
 Header always set X-Content-Type-Options "nosniff"

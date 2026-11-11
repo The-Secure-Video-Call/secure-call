@@ -7,6 +7,8 @@
 #   eslint, vitest and vite all run here, where there is nothing to steal.
 # - rebuild: builds the same commit again on macOS with almost no environment. Nothing is
 #   uploaded unless both builds are byte-identical.
+# - sbom: writes the SBOM of the production dependencies from the lockfile alone. Nothing is
+#   installed and no dependency code runs there.
 # Artifacts are passed by their ID (each job's output), never by name: a job that runs
 # third-party code could replace a named artifact of this run, but not change another job's
 # outputs, and a replaced artifact gets a new ID.
@@ -14,9 +16,9 @@
 #   then uploads exactly the files the build job made. No checkout, no Node and no project
 #   code run here; only the downloaded files, shell checks and lftp from Ubuntu's own packages.
 # - release (main only): after a successful upload, publishes SHA256SUMS of exactly those
-#   files as the GitHub Release "web-<commit>", attested as made by this workflow on main, so
-#   anyone can check the live site against this repository (scripts/verify-deployed.mjs,
-#   SECURITY.md) or rebuild the commit and compare.
+#   files and the SBOM as the GitHub Release "web-<commit>", both attested as made by this
+#   workflow on main, so anyone can check the live site against this repository
+#   (scripts/verify-deployed.mjs, SECURITY.md) or rebuild the commit and compare.
 #
 # Settings live in the "production" environment: variables FTP_SERVER and FTP_USERNAME,
 # secret FTP_PASSWORD.
@@ -121,8 +123,54 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
+  # The SBOM (CycloneDX 1.6, JSON) of the production dependencies, which are what ends up in the
+  # bundle: every package with its version, purl, registry URL and the lockfile's SHA-512. Read
+  # from pnpm-lock.yaml alone (--lockfile-only): nothing is installed, so no dependency code runs.
+  # It has no licenses, which would need the packages themselves.
+  # pnpm 10 (packageManager) has no `pnpm sbom`, so this one command runs pnpm 11, fetched by
+  # corepack and pinned by its npm SHA-512 (corepack refuses any other file; Dependabot does not
+  # update this pin). It runs here, with the read-only token, and not in the release job, so a
+  # package downloaded from npm never runs where attestations can be signed.
+  # serialNumber is random and timestamp the current time: both are removed (as cyclonedx-npm's
+  # --output-reproducible does), so the same commit always gives the same bytes (SECURITY.md).
+  sbom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # For corepack, which comes with Node.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      # --pm-on-fail=ignore: pnpm 11 otherwise refuses to run in a project that names pnpm 10.
+      - name: Write the SBOM from the lockfile
+        env:
+          SBOM_PNPM: pnpm@11.28.9+sha512.35421cea2720eca3f5ad722b67e8ef18f4d3cd4745ed2fcfeb0dc288d4e9437fad3870d91ee6e83f268f0f6f7e0f62723317b19617bb45ee4333172ef51159f8
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          corepack "$SBOM_PNPM" sbom --pm-on-fail=ignore --lockfile-only --prod \
+            --sbom-format cyclonedx --sbom-spec-version 1.6 --sbom-type application > pnpm-sbom.json
+          jq 'del(.serialNumber, .metadata.timestamp)' pnpm-sbom.json > sbom.cdx.json
+          jq -se 'length == 1 and (.[0] | .bomFormat == "CycloneDX" and (.components | type == "array" and length > 0))' \
+            sbom.cdx.json > /dev/null || { echo "pnpm wrote no SBOM with components."; exit 1; }
+          jq -r '.components[] | "\(.name)@\(.version)"' sbom.cdx.json
+      - name: Keep the SBOM for the release job
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-sbom
+          path: sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 5
+
   deploy:
-    needs: [build, rebuild]
+    # The SBOM job too: nothing goes live that its release could not be published for.
+    needs: [build, rebuild, sbom]
     # Only main reaches production, whatever branch a manual run starts from (the production
     # environment allows main only as well).
     if: github.ref == 'refs/heads/main'
@@ -255,10 +303,11 @@ jobs:
   # The only job that can write to the repository (the release and its tag) or sign an
   # attestation. It has no secret and runs no project code: it hashes the artifact the deploy job
   # checked and uploaded (and refuses unless those hashes are the ones the deploy job recorded),
-  # and reads the toolchain versions from the repository at this commit over HTTPS (no
-  # checkout), never from the build job, so nothing from there reaches it.
+  # takes the SBOM from the sbom job (which runs no dependency code either), and reads the
+  # toolchain versions from the repository at this commit over HTTPS (no checkout), never from
+  # the build job, so nothing from there reaches it.
   release:
-    needs: [build, deploy]
+    needs: [build, deploy, sbom]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -272,10 +321,27 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.artifact-id }}
           path: site
+      - name: Get the SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.sbom.outputs.artifact-id }}
+          path: sbom
+      # A release cannot be changed once published, so a broken SBOM must never reach one.
+      - name: Check the SBOM
+        run: |
+          set -euo pipefail
+          [ -f sbom/sbom.cdx.json ] && [ ! -L sbom/sbom.cdx.json ] || { echo "no sbom.cdx.json"; exit 1; }
+          # One JSON document (-s reads them all), CycloneDX, with an array of components.
+          jq -se 'length == 1 and (.[0] | .bomFormat == "CycloneDX" and (.components | type == "array" and length > 0))' \
+            sbom/sbom.cdx.json > /dev/null || { echo "sbom.cdx.json is not a CycloneDX SBOM with components."; exit 1; }
+          cp sbom/sbom.cdx.json sbom.cdx.json
 
       # - The hashes must be exactly the ones of the upload (the deploy job's output).
       # - An existing release (a re-run) must list the same hashes and its tag this commit;
-      #   otherwise this fails instead of replacing anything.
+      #   otherwise this fails instead of replacing anything. It must be published (not a draft)
+      #   and have this SBOM, byte for byte (the same commit always gives the same SBOM): this
+      #   code exists only at commits whose releases have one, so a release of this commit without
+      #   it was made some other way, or broke off half-made.
       # - A new release's tag is created here first, atomically: if a tag of that name already
       #   exists, it is used only if it is this commit.
       - name: Hash the deployed files and prepare the tag
@@ -299,9 +365,15 @@ jobs:
             [ "$tag_target" = "commit $COMMIT" ] || { echo "The tag $tag does not point at $COMMIT."; exit 1; }
           }
           if gh release view "$tag" >/dev/null 2>&1; then
+            gh release view "$tag" --json isDraft,assets --jq '(.isDraft | tostring) + " " + ([.assets[].name] | sort | join(" "))' > published-release.txt
+            [ "$(cat published-release.txt)" = "false SHA256SUMS sbom.cdx.json" ] || {
+              echo "$tag exists, but as a draft or without exactly SHA256SUMS and sbom.cdx.json. Not replacing it."; exit 1; }
             gh release download "$tag" --pattern SHA256SUMS --output published-SHA256SUMS
             cmp -s SHA256SUMS published-SHA256SUMS || {
               echo "$tag exists with DIFFERENT hashes: the build is not reproducible. Not replacing it."; exit 1; }
+            gh release download "$tag" --pattern sbom.cdx.json --output published-sbom.cdx.json
+            cmp -s sbom.cdx.json published-sbom.cdx.json || {
+              echo "$tag exists with a DIFFERENT SBOM. Not replacing it."; exit 1; }
             check_tag
             echo "$tag is already published with these exact hashes (reproducible)."
             echo "is-new=false" >> "$GITHUB_OUTPUT"
@@ -317,14 +389,19 @@ jobs:
 
       # Signed with a certificate that names this workflow file, main and this commit, so a
       # release made any other way (another workflow, a person) cannot carry it (SECURITY.md).
-      # Always, also for an existing release: attesting the same SHA256SUMS again is harmless,
+      # One attestation with both files as subjects, so `gh attestation verify` checks each the
+      # same way, for the same workflow, branch and commit. No new action, and no predicate to
+      # parse (actions/attest-sbom would put the SBOM itself in the predicate).
+      # Always, also for an existing release: attesting the same files again is harmless,
       # and a release someone made in advance with these hashes still gets its attestation.
-      - name: Attest SHA256SUMS as made by this workflow on main
+      - name: Attest SHA256SUMS and the SBOM as made by this workflow on main
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: SHA256SUMS
+          subject-path: |
+            SHA256SUMS
+            sbom.cdx.json
 
-      - name: Publish SHA256SUMS as a release
+      - name: Publish SHA256SUMS and the SBOM as a release
         if: steps.hashes.outputs.is-new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -358,12 +435,19 @@ jobs:
             echo "      --source-ref refs/heads/main --source-digest $COMMIT --deny-self-hosted-runners"
             echo
             echo "or rebuild the commit yourself and compare (SECURITY.md)."
+            echo
+            echo "sbom.cdx.json is the SBOM (CycloneDX) of the production dependencies, from the"
+            echo "lockfile at this commit. It is attested the same way: the same command with"
+            echo "sbom.cdx.json in place of SHA256SUMS."
           } > release-notes.md
+          # Every asset goes up here, at creation: a published release cannot get new ones.
           # --verify-tag: the tag made above must still exist; never let gh create one elsewhere.
           # --target: without it GitHub records the default branch's name as the release's commit.
-          gh release create "$tag" SHA256SUMS --verify-tag --target "$COMMIT" --title "Web app $tag" --notes-file release-notes.md
+          gh release create "$tag" SHA256SUMS sbom.cdx.json --verify-tag --target "$COMMIT" --title "Web app $tag" --notes-file release-notes.md
           tag_target="$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha')"
           [ "$tag_target" = "commit $COMMIT" ] || { echo "The tag $tag does not point at $COMMIT."; exit 1; }
+          published="$(gh release view "$tag" --json isDraft,assets --jq '(.isDraft | tostring) + " " + ([.assets[].name] | sort | join(" "))')"
+          [ "$published" = "false SHA256SUMS sbom.cdx.json" ] || { echo "The release $tag is a draft or lacks an asset."; exit 1; }
           release_target="$(gh api "repos/$GH_REPO/releases/tags/$tag" --jq '.target_commitish')"
           [ "$release_target" = "$COMMIT" ] || { echo "The release $tag records $release_target, not $COMMIT."; exit 1; }
           echo "Published $tag."
