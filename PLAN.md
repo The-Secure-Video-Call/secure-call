@@ -114,7 +114,7 @@ A web app is only as trustworthy as the JavaScript the server sends. If someone 
 | Validation | **Pydantic 2** on the server (source of truth) + **zod** in the browser | Both are tested against the same JSON Schema and example messages |
 | TURN/STUN | **coturn** (self-hosted) | Industry standard, supports time-limited credentials |
 | Static hosting / CDN | **Shared Apache host** (ServerByt) behind **StackCDN** | Serves the built web app; `.htaccess` carries the CSP and security headers; deployed from CI over FTPS |
-| Reverse proxy / TLS | **Nginx Proxy Manager** on a separate small machine on the home LAN, with Let's Encrypt certificates | Terminates TLS for `signal.securevideocall.com` and forwards plain HTTP to Daphne on the Pi (TLS on that hop is planned: [secure-call-backend#79](https://github.com/The-Secure-Video-Call/secure-call-backend/issues/79)) |
+| Reverse proxy / TLS | **Nginx Proxy Manager** on a separate small machine on the home LAN, with Let's Encrypt certificates | Terminates TLS for `signal.securevideocall.com` and forwards over TLS to Daphne on the Pi, checking Daphne's certificate against our own local CA ([secure-call-backend#79](https://github.com/The-Secure-Video-Call/secure-call-backend/pull/79)); refuses plain HTTP except Let's Encrypt's challenge |
 | Deployment | **Docker Compose on a Raspberry Pi** (Daphne, coturn, PostgreSQL); the backend image comes from GHCR, pulled by the Pi | No inbound access from GitHub; see [docs/architecture.md](docs/architecture.md) for every host, port and flow |
 | Repos | **secure-call** (pnpm workspaces: web client + zod protocol package) and **secure-call-backend** (uv) | Node is only the web client's build tool; nothing in production runs on Node |
 | Tests | **Vitest** (unit) + **Playwright** (two-browser end-to-end calls with fake camera); **pytest** for the server | Real call tests in CI without real hardware |
@@ -132,32 +132,33 @@ Two repos in the GitHub organisation. The web client:
 ```
 secure-call/
 ├── apps/
-│   ├── web/                    # React client
-│   │   └── src/
-│   │       ├── pages/          # One file per screen: LobbyPage, CallPage, ...
-│   │       ├── components/     # UI pieces shared by several pages (safety-code dialog, controls)
-│   │       ├── crypto/         # Secret, room ID, HKDF, AES-GCM, safety code (pure functions, heavily tested)
-│   │       ├── media/          # Camera and microphone
-│   │       ├── rtc/            # RTCPeerConnection setup, "perfect negotiation", ICE restart
-│   │       ├── signaling/      # WebSocket client, encrypt/decrypt wrapper
-│   │       ├── App.tsx         # Picks the page for the current link
-│   │       └── main.tsx
+│   └── web/                    # React client
+│       ├── src/
+│       │   ├── pages/          # One file per screen: LobbyPage, CallPage, ...
+│       │   ├── components/     # UI pieces shared by several pages (safety-code dialog, controls)
+│       │   ├── crypto/         # Secret, room ID, HKDF, AES-GCM, safety code (pure functions, heavily tested)
+│       │   ├── media/          # Camera and microphone
+│       │   ├── rtc/            # RTCPeerConnection setup, "perfect negotiation", ICE restart
+│       │   ├── signaling/      # WebSocket client, encrypt/decrypt wrapper
+│       │   ├── App.tsx         # Picks the page for the current link
+│       │   └── main.tsx
+│       ├── e2e/                # Playwright tests: two browsers place a real call
+│       ├── build-tools/        # Build-output check: no inline code, SRI hashes, security headers
+│       └── public/.htaccess    # CSP and security headers for the static host
 ├── packages/
 │   └── protocol/               # zod schemas + TypeScript types, tested against the backend's protocol fixtures
-├── infra/
-│   ├── docker-compose.yml
-│   ├── Caddyfile
-│   └── coturn/turnserver.conf
+├── scripts/                    # Uptime check, deployed-site verification, pinned-actions check
 ├── docs/
-│   ├── architecture.md
+│   ├── architecture.md         # Every host, port and flow of the deployment
 │   ├── threat-model.md
-│   └── protocol.md
-├── e2e/                        # Playwright tests: two browsers place a real call
+│   ├── protocol.md
+│   ├── data-inventory.md
+│   ├── security-review.md      # OWASP ASVS 5.0 self-review
+│   └── testing-mobile.md       # Manual phone checklist
 ├── .github/
-│   ├── workflows/ci.yml
+│   ├── workflows/              # ci, deploy-web, uptime, Claude review, contract copy check
 │   ├── dependabot.yml
-│   ├── CODEOWNERS
-│   └── ISSUE_TEMPLATE/
+│   └── CODEOWNERS
 ├── SECURITY.md                 # How to report vulnerabilities
 ├── LICENSE
 └── README.md
@@ -177,7 +178,7 @@ secure-call-backend/
 │   ├── schema/                 # JSON Schema exported from the Pydantic models
 │   └── fixtures/               # valid/ and invalid/ example messages, used by both repos
 ├── tests/                      # pytest
-├── deploy/raspberry-pi/        # Docker Compose for PostgreSQL on the test Pi
+├── deploy/raspberry-pi/        # Docker Compose (backend, PostgreSQL, coturn), firewall, certificates, update.sh
 ├── .github/workflows/          # CI: ruff, mypy, pytest, Django deploy checks, pip-audit
 ├── SECURITY.md
 ├── LICENSE
@@ -260,23 +261,50 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 **Demo:** a call between a laptop on Wi-Fi and a phone on mobile data.
 
 ### M4 — Hardening
-- [ ] Strict CSP, SRI, all security headers from §3.5
-- [ ] Origin check, Pydantic validation, size limits, rate limiting on the signaling server
-- [ ] Playwright end-to-end test: two browsers with fake cameras complete a call in CI
-- [ ] `pnpm audit` / `npm audit` in CI; pin dependency versions
-- [ ] Reproducible build, with release hashes published on GitHub Releases
-- [ ] Self-review against OWASP ASVS (relevant sections) and get an outside security review if possible
+- [x] Strict CSP, SRI, all security headers from §3.5 (`apps/web/public/.htaccess`, checked by `check:build`)
+- [x] Origin check, Pydantic validation, size limits, rate limiting on the signaling server
+- [x] Playwright end-to-end test: two browsers with fake cameras complete a call in CI
+- [x] `pnpm audit` in CI; pin dependency versions (and every GitHub Action by commit)
+- [x] Reproducible build, with release hashes (`SHA256SUMS`) and an SBOM published on GitHub Releases
+- [x] Self-review against OWASP ASVS 5.0, Level 2 ([docs/security-review.md](docs/security-review.md)); every finding fixed or recorded as an exception
+- [ ] An outside security review, if someone can be found
 
 **Demo:** CI runs a full encrypted call end-to-end on every PR.
 
 ### M5 — Deploy
-- [ ] Domain + VPS (any provider; 2 vCPU / 2 GB RAM is plenty to start; TURN bandwidth is the main cost)
-- [ ] `docker compose up` brings up Caddy (static site + TLS), signaling, and coturn
-- [ ] Open firewall: 443/tcp, 3478/udp+tcp, 5349/tcp, plus the TURN relay UDP port range
+The deployment differs from the original VPS plan; [docs/architecture.md](docs/architecture.md) has every host, port and flow.
+- [x] Domain `securevideocall.com`; the static site on a shared Apache host (ServerByt) behind StackCDN
+- [x] Signaling, coturn and PostgreSQL with Docker Compose on a Raspberry Pi 5 at home (secure-call-backend `deploy/raspberry-pi`), behind Nginx Proxy Manager on a Pi Zero 2 W; TLS on every hop
+- [x] Router forwards: 80/443/tcp to the proxy; 3478/udp+tcp, 5349/tcp and the TURN relay UDP range to the Pi 5; firewall rules on the Pi's Docker bridges (secure-call-backend#87)
 - [x] Health check endpoint and uptime monitoring (no personal data in metrics): `.github/workflows/uptime.yml`
-- [ ] Deploy workflow from GitHub Actions on tagged releases
+- [x] Deploy workflow from GitHub Actions: every push to `main`, after `production` approval, deploys over FTPS and publishes a GitHub Release (`.github/workflows/deploy-web.yml`); the Pi installs only attested backend images (`update.sh`)
 
 **Demo:** public URL; call a friend on another network.
+
+### M6 — Polish and accessibility
+- [x] Apply the decided project name, Secure Video Call (#76)
+- [ ] Design tokens and light/dark theming (#75)
+- [ ] Logo, favicon, touch icons and theme-color (#77)
+- [ ] Inline-SVG icons on the existing controls (#78)
+- [ ] Carry the lobby's device choices into the call (#79)
+- [ ] Lobby flow: start your own call, copy feedback, Web Share, paste a link (#80)
+- [ ] Focus management, focus-visible styles, keyboard shortcuts and live regions (#81)
+- [ ] Every user-visible string in one typed module (#82)
+- [ ] Rewrite `docs/testing-mobile.md` and run the full phone pass (#83)
+
+**Demo:** the themed, icon-based app passes the full phone checklist on iOS Safari and Android Chrome.
+
+### M7 — Call features
+- [ ] Call timer (#84)
+- [ ] Copy or share the link again while waiting (#85)
+- [ ] In-call microphone and speaker switching (#86)
+- [ ] Fullscreen and picture-in-picture (#87)
+- [ ] Screen sharing (#88)
+- [ ] Text chat over the data channel (#89)
+- [ ] Remote mute and camera-off indicators (#90)
+- [ ] Extend `docs/testing-mobile.md` and run the pass again (#91)
+
+**Demo:** a phone call with chat, screen sharing and device switching passes the extended checklist on iOS Safari and Android Chrome.
 
 ---
 
@@ -309,6 +337,6 @@ Each milestone ends with something you can demo. Issues in GitHub can map 1:1 to
 |---|---|---|
 | Project name | Keep "Secure Call" / a new name | **Decided: Secure Video Call** (#92): it matches `securevideocall.com` and the GitHub organization, and "Secure Call" is already the name of other calling apps. Code names stay `secure-call` |
 | License | MIT (permissive) / AGPL-3.0 (forks must share source) | **Decided: AGPL-3.0-only** (see `LICENSE`) |
-| Hosting provider | Hetzner, DigitalOcean, AWS Lightsail, etc. | Any VPS with good bandwidth pricing |
+| Hosting provider | Hetzner, DigitalOcean, AWS Lightsail, etc. | **Decided:** the static site on ServerByt behind StackCDN; the backend and coturn on a Raspberry Pi at home (see M5) |
 | Safety code format | Emoji / digits / words | Emoji, with digits as an accessible alternative |
 | Room expiry times | — | 10 min idle, 4 h max |
