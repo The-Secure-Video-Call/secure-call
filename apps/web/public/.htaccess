@@ -1,4 +1,4 @@
-# Security headers for the Secure Call web app (PLAN.md sections 3.4 and 3.5).
+# Security headers for the Secure Video Call web app (PLAN.md sections 3.4 and 3.5).
 # Vite copies this file into dist/, and .github/workflows/deploy-web.yml uploads it to
 # public_html on securevideocall.com (Apache). The host already redirects HTTP to HTTPS.
 #

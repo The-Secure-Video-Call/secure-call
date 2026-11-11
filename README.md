@@ -1,4 +1,4 @@
-# Secure Call
+# Secure Video Call
 
 A secure 1-to-1 video calling web app. Media is peer-to-peer (WebRTC); the signaling server only
 relays opaque, end-to-end encrypted messages. The room secret lives only in the URL fragment.
