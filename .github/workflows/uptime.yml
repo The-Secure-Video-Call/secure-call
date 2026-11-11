@@ -1,10 +1,15 @@
-# Uptime monitoring (PLAN.md M5, issue #74): every 10 minutes GitHub's own runners, outside the
-# home network, fetch the site and the signaling server's health check. When either fails three
+# Uptime monitoring (PLAN.md M5, issues #74 and #129): every 10 minutes GitHub's own runners,
+# outside the home network, fetch the site and the signaling server's health check, and send a
+# STUN Binding request to the TURN server over UDP (3478) and over TLS (5349). When one fails three
 # times in a row, an issue "Uptime: securevideocall.com is down" is opened (which notifies the
-# repository's watchers); when both answer again, that issue is closed.
+# repository's watchers); when all answer again, that issue is closed. A second issue opens while
+# the TURN certificate expires within 21 days, and closes once a renewed one is served.
 #
-# No personal data: the checks only read two public URLs, and the issue says which URL failed and
-# when, nothing else. Nothing runs on the Pis. The logic lives in scripts/check-uptime.sh.
+# No personal data: the checks only reach public endpoints, the issues say which one failed and
+# when, and nothing a server sent is printed (a STUN answer carries the runner's own address).
+# Nothing runs on the Pis. The logic lives in scripts/check-uptime.sh and scripts/check-turn.mjs.
+# A manual run can be a dry run, which changes no issue (to try a branch: gh workflow run
+# uptime.yml --ref <branch> -f dry_run=true).
 #
 # Limits: GitHub may start scheduled runs late under load, and in a public repository it disables
 # scheduled workflows after 60 days without activity. A push does not turn this one back on:
@@ -16,6 +21,11 @@ on:
     # Minute 3, 13, 23 and so on: GitHub delays and drops more runs at the top of the hour.
     - cron: '3-59/10 * * * *'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print what would happen to the issues, change nothing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,16 +40,20 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      issues: write # open and close the downtime issue only
+      issues: write # open and close the downtime and certificate issues only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: scripts/check-uptime.sh
+          sparse-checkout: |
+            scripts/check-uptime.sh
+            scripts/check-turn.mjs
           sparse-checkout-cone-mode: false
-      - name: Check the site and the signaling server
+      # check-turn.mjs uses only Node's own modules, so the runner's preinstalled Node is enough.
+      - name: Check the site, the signaling server and the TURN server
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          UPTIME_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
         run: bash scripts/check-uptime.sh
