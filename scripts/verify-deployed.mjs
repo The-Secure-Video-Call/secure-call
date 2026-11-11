@@ -10,6 +10,7 @@
 //   - every response carries the security headers apps/web/public/.htaccess sets at the
 //     release's commit (whose own hash must match SHA256SUMS; .htaccess itself is not served),
 //     index.html is never cached as immutable, and no response redirects with Refresh.
+// index.html and the JS and CSS must also be served with charset=utf-8 (ASVS V4.1.1).
 // Anyone can run it; it needs Node 22+ and gh (signed in) for the attestation:
 //   node scripts/verify-deployed.mjs [--release web-<commit>] [--site https://securevideocall.com]
 //   node scripts/verify-deployed.mjs --skip-provenance   # without gh: files and headers only
@@ -133,6 +134,20 @@ export function readReferencedPaths(indexHtml) {
   return { paths, problems };
 }
 
+/**
+ * Problem with a response's Content-Type charset: index.html and the JS and CSS under assets/
+ * must say charset=utf-8 (ASVS V4.1.1), so a host cannot leave the encoding to be guessed.
+ */
+export function checkCharset(label, headers) {
+  const contentType = headers.get('content-type');
+  const hasUtf8Charset = /;\s*charset\s*=\s*"?utf-8"?\s*(;|$)/i.test(contentType ?? '');
+  return hasUtf8Charset
+    ? []
+    : [
+        `${label}: Content-Type is ${contentType === null ? 'missing' : JSON.stringify(contentType)}, expected charset=utf-8`,
+      ];
+}
+
 /** Problems with one response's headers: each expected header exactly, and no Refresh. */
 function checkResponseHeaders(label, headers, expectedHeaders) {
   const problems = [];
@@ -160,6 +175,9 @@ export async function verifySite({ siteUrl, hashesByPath, expectedHeaders, fetch
 
   const indexHeaderProblems = checkResponseHeaders('index.html', index.headers, expectedHeaders);
   problems.push(...indexHeaderProblems);
+  const indexCharsetProblems = checkCharset('index.html', index.headers);
+  problems.push(...indexCharsetProblems);
+  if (indexCharsetProblems.length === 0) passed.push('index.html charset');
   if (indexHeaderProblems.length === 0)
     passed.push(...[...expectedHeaders.keys()].map((headerName) => `header ${headerName}`));
   // index.html must be revalidated: a host must not hand someone a copy cached for a year.
@@ -189,6 +207,7 @@ export async function verifySite({ siteUrl, hashesByPath, expectedHeaders, fetch
     }
     const asset = await fetchBytes(new URL(`/${path}`, siteUrl).href);
     const assetProblems = checkResponseHeaders(path, asset.headers, expectedHeaders);
+    if (/\.(js|css)$/.test(path)) assetProblems.push(...checkCharset(path, asset.headers));
     if (sha256Hex(asset.bytes) !== expectedHash)
       assetProblems.push(`${path} differs from the release`);
     if (assetProblems.length === 0) passed.push(path);

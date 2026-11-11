@@ -146,6 +146,11 @@ function fakeWorld({
         ...Object.fromEntries(
           Object.entries(ALWAYS_SET_HEADERS).map(([name, value]) => [name.toLowerCase(), value]),
         ),
+        'content-type': path.endsWith('.js')
+          ? 'text/javascript; charset=utf-8'
+          : path.endsWith('.css')
+            ? 'text/css; charset=utf-8'
+            : 'text/html; charset=utf-8',
         'cache-control': path === '/' ? 'no-cache' : 'public, max-age=31536000, immutable',
         ...siteHeaders,
         ...(path === '/' ? indexHeaders : assetHeaders),
@@ -185,6 +190,31 @@ async function expectFailure(world, pattern, commandLineArguments = []) {
   assert.match(output, pattern);
   assert.doesNotMatch(output, /serves exactly this release/);
 }
+
+// Charset (ASVS V4.1.1)
+
+test('index.html, JS and CSS without charset=utf-8 fail', async () => {
+  const cases = [
+    [
+      { indexHeaders: { 'content-type': 'text/html' } },
+      /index\.html: Content-Type is "text\/html"/,
+    ],
+    [
+      { indexHeaders: { 'content-type': 'text/html; charset=iso-8859-1' } },
+      /index\.html: Content-Type/,
+    ],
+    [
+      { assetHeaders: { 'content-type': 'text/javascript' } },
+      /assets\/index-AAA\.js: Content-Type/,
+    ],
+    [
+      { assetHeaders: { 'content-type': 'text/css; charset=latin1' } },
+      /assets\/index-BBB\.css: Content-Type/,
+    ],
+  ];
+  for (const [worldOptions, pattern] of cases)
+    await expectFailure(fakeWorld(worldOptions), pattern);
+});
 
 // Positive cases (each check below must fail when its input is changed).
 
