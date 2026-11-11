@@ -763,7 +763,8 @@ fingerprint)`.
 **Configuration and deployment**
 
 - **V13.1.1:** no current list of communication flows. The CDN in front of the static site is
-  undocumented, and PLAN.md §4 still describes Caddy on a VPS.
+  undocumented, and PLAN.md §4 still describes Caddy on a VPS. (Addressed by
+  [architecture.md](architecture.md) and the corrected PLAN.md §4.)
   - **Fix:** write the `docs/architecture.md` that PLAN.md §5 promises. Fix the stale lines in
     `docs/threat-model.md` and both READMEs: the threat model still says SRI, reproducible builds
     and server rate limiting are not done, and both READMEs still say "Status: M0".
