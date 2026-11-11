@@ -4,16 +4,20 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import dgram from 'node:dgram';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import tls from 'node:tls';
+import { pathToFileURL } from 'node:url';
 import { after, before, describe, test } from 'node:test';
 import {
   MAX_MESSAGE_BYTES,
   bindingRequest,
   daysLeft,
+  isBindingError,
   isBindingSuccess,
+  isEntryPoint,
   main,
   stunOverTls,
   stunOverUdp,
@@ -21,6 +25,15 @@ import {
 
 const TRANSACTION_ID = Buffer.from('000102030405060708090a0b', 'hex');
 const MAGIC_COOKIE = Buffer.from('2112a442', 'hex');
+const temporaryFolders = [];
+after(() => {
+  for (const folder of temporaryFolders) rmSync(folder, { recursive: true, force: true });
+});
+const temporaryFolder = (prefix) => {
+  const folder = mkdtempSync(join(tmpdir(), prefix));
+  temporaryFolders.push(folder);
+  return folder;
+};
 
 /** A STUN message: type, then attributes (already padded), with the right length field. */
 function stunMessage(type, transactionId, attributes = Buffer.alloc(0)) {
@@ -33,6 +46,7 @@ function stunMessage(type, transactionId, attributes = Buffer.alloc(0)) {
 // XOR-MAPPED-ADDRESS (type 0x0020, 8 bytes): what coturn really sends back.
 const XOR_MAPPED_ADDRESS = Buffer.from('0020000800012e4a21d2a443', 'hex');
 const bindingSuccess = (transactionId) => stunMessage(0x0101, transactionId, XOR_MAPPED_ADDRESS);
+const idOf = (request) => request.subarray(8, 20);
 
 describe('bindingRequest', () => {
   test('is a 20-byte Binding request with the magic cookie and the transaction ID', () => {
@@ -50,23 +64,25 @@ describe('bindingRequest', () => {
   });
 });
 
-describe('isBindingSuccess', () => {
-  test('accepts a Binding success for our transaction, with or without attributes', () => {
+describe('isBindingSuccess and isBindingError', () => {
+  test('accept a Binding success for our transaction, with or without attributes', () => {
     assert.equal(isBindingSuccess(bindingSuccess(TRANSACTION_ID), TRANSACTION_ID), true);
     assert.equal(isBindingSuccess(stunMessage(0x0101, TRANSACTION_ID), TRANSACTION_ID), true);
+    assert.equal(isBindingError(stunMessage(0x0111, TRANSACTION_ID), TRANSACTION_ID), true);
   });
 
-  test('rejects an answer to another transaction', () => {
-    const other = Buffer.from('ffffffffffffffffffffffff', 'hex');
+  test('reject an answer to another transaction', () => {
+    const other = Buffer.alloc(12, 0xff);
     assert.equal(isBindingSuccess(bindingSuccess(other), TRANSACTION_ID), false);
+    assert.equal(isBindingError(stunMessage(0x0111, other), TRANSACTION_ID), false);
   });
 
-  test('rejects a Binding error response and a request echoed back', () => {
+  test('a Binding error response or a request echoed back is not a success', () => {
     assert.equal(isBindingSuccess(stunMessage(0x0111, TRANSACTION_ID), TRANSACTION_ID), false);
     assert.equal(isBindingSuccess(bindingRequest(TRANSACTION_ID), TRANSACTION_ID), false);
   });
 
-  test('rejects a truncated message, extra bytes and a length that is not a multiple of 4', () => {
+  test('reject a truncated message, extra bytes and a length that is not a multiple of 4', () => {
     const success = bindingSuccess(TRANSACTION_ID);
     assert.equal(isBindingSuccess(success.subarray(0, success.length - 4), TRANSACTION_ID), false);
     assert.equal(isBindingSuccess(success.subarray(0, 19), TRANSACTION_ID), false);
@@ -78,7 +94,7 @@ describe('isBindingSuccess', () => {
     assert.equal(isBindingSuccess(oddLength, TRANSACTION_ID), false);
   });
 
-  test('rejects a wrong magic cookie, an oversized message and anything that is not a Buffer', () => {
+  test('reject a wrong magic cookie, an oversized message and anything that is not a Buffer', () => {
     const wrongCookie = Buffer.from(bindingSuccess(TRANSACTION_ID));
     wrongCookie.writeUInt32BE(0, 4);
     assert.equal(isBindingSuccess(wrongCookie, TRANSACTION_ID), false);
@@ -104,57 +120,98 @@ describe('daysLeft', () => {
   });
 });
 
-/** A UDP server on 127.0.0.1 that answers each request with answer(request). */
-async function udpServer(answer) {
+describe('isEntryPoint', () => {
+  const modulePath = join(import.meta.dirname, 'check-turn.mjs');
+  const moduleUrl = pathToFileURL(modulePath).href;
+
+  test('is true for the module itself, also through a symlinked folder', () => {
+    assert.equal(isEntryPoint(modulePath, moduleUrl), true);
+    const link = join(temporaryFolder('check-turn-link-'), 'scripts');
+    symlinkSync(import.meta.dirname, link);
+    assert.equal(isEntryPoint(join(link, 'check-turn.mjs'), moduleUrl), true);
+  });
+
+  test('is false for another file, a missing file and no argument', () => {
+    assert.equal(isEntryPoint(join(import.meta.dirname, 'check-uptime.sh'), moduleUrl), false);
+    assert.equal(isEntryPoint(join(import.meta.dirname, 'missing.mjs'), moduleUrl), false);
+    assert.equal(isEntryPoint(undefined, moduleUrl), false);
+  });
+});
+
+/** A UDP server on 127.0.0.1 that answers each request with answer(request), from its own port. */
+async function udpServer(answer, replyFrom) {
   const server = dgram.createSocket('udp4');
   server.on('message', (request, remote) => {
     const reply = answer(request);
-    if (reply) server.send(reply, remote.port, remote.address);
+    if (reply) (replyFrom ?? server).send(reply, remote.port, remote.address);
   });
   await new Promise((resolve) => server.bind(0, '127.0.0.1', resolve));
   return { port: server.address().port, close: () => server.close() };
 }
 
 describe('stunOverUdp', () => {
+  const check = (port, timeoutMs = 2000) => stunOverUdp({ host: '127.0.0.1', port, timeoutMs });
+
   test('passes when the server answers with a matching Binding success', async () => {
-    const server = await udpServer((request) => bindingSuccess(request.subarray(8, 20)));
+    const server = await udpServer((request) => bindingSuccess(idOf(request)));
     try {
-      const result = await stunOverUdp({ host: '127.0.0.1', port: server.port, timeoutMs: 2000 });
-      assert.deepEqual(result, { ok: true });
+      assert.deepEqual(await check(server.port), { ok: true });
     } finally {
       server.close();
     }
   });
 
-  test('fails on an answer to another transaction or an error response', async () => {
-    for (const answer of [
-      () => bindingSuccess(Buffer.alloc(12, 0xff)),
-      (request) => stunMessage(0x0111, request.subarray(8, 20)),
-    ]) {
-      const server = await udpServer(answer);
-      try {
-        const result = await stunOverUdp({ host: '127.0.0.1', port: server.port, timeoutMs: 300 });
-        assert.deepEqual(result, { ok: false, reason: 'no answer' });
-      } finally {
-        server.close();
-      }
-    }
-  });
-
-  test('fails when nothing answers', async () => {
-    const server = await udpServer(() => undefined);
+  test('ignores an answer to another transaction', async () => {
+    const server = await udpServer(() => bindingSuccess(Buffer.alloc(12, 0xff)));
     try {
-      const result = await stunOverUdp({ host: '127.0.0.1', port: server.port, timeoutMs: 300 });
-      assert.equal(result.ok, false);
+      assert.deepEqual(await check(server.port, 300), { ok: false, reason: 'no answer' });
     } finally {
       server.close();
     }
+  });
+
+  test('ignores a matching answer sent from another port', async () => {
+    const other = dgram.createSocket('udp4');
+    await new Promise((resolve) => other.bind(0, '127.0.0.1', resolve));
+    const server = await udpServer((request) => bindingSuccess(idOf(request)), other);
+    try {
+      assert.deepEqual(await check(server.port, 300), { ok: false, reason: 'no answer' });
+    } finally {
+      server.close();
+      other.close();
+    }
+  });
+
+  test('reports a Binding error response as such', async () => {
+    const server = await udpServer((request) => stunMessage(0x0111, idOf(request)));
+    try {
+      assert.deepEqual(await check(server.port), {
+        ok: false,
+        reason: 'Binding error response',
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  test('fails when nothing answers, and at once with ECONNREFUSED on a closed port', async () => {
+    const silent = await udpServer(() => undefined);
+    try {
+      assert.deepEqual(await check(silent.port, 300), { ok: false, reason: 'no answer' });
+    } finally {
+      silent.close();
+    }
+    const closed = await udpServer(() => undefined);
+    closed.close();
+    const started = Date.now();
+    assert.deepEqual(await check(closed.port, 5000), { ok: false, reason: 'ECONNREFUSED' });
+    assert.ok(Date.now() - started < 4000);
   });
 });
 
 /** A throwaway CA and leaf certificates, made with openssl (OpenSSL or LibreSSL). */
 function makeCertificates() {
-  const folder = mkdtempSync(join(tmpdir(), 'check-turn-'));
+  const folder = temporaryFolder('check-turn-');
   const run = (...args) => {
     const result = spawnSync('openssl', args, { cwd: folder, encoding: 'utf8' });
     assert.equal(result.status, 0, `openssl ${args.join(' ')}: ${result.stderr}`);
@@ -245,7 +302,10 @@ function makeCertificates() {
 
 /** A TLS server on 127.0.0.1 that hands each connection to onConnection(socket). */
 async function tlsServer(certificate, onConnection) {
-  const server = tls.createServer(certificate, onConnection);
+  const server = tls.createServer(certificate, (socket) => {
+    socket.on('error', () => {});
+    onConnection(socket);
+  });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {
     port: server.address().port,
@@ -253,159 +313,199 @@ async function tlsServer(certificate, onConnection) {
   };
 }
 
-/** Answers the first STUN request on the connection with answer(request). */
-const answeringWith = (answer) => (socket) => {
-  let received = Buffer.alloc(0);
-  socket.on('data', (chunk) => {
-    received = Buffer.concat([received, chunk]);
-    if (received.length >= 20) socket.write(answer(received.subarray(0, 20)));
-  });
-  socket.on('error', () => {});
-};
+/** Answers the first STUN request on the connection with answer(request), in `pieces` writes. */
+const answeringWith =
+  (answer, pieces = 1) =>
+  (socket) => {
+    let received = Buffer.alloc(0);
+    let answered = false;
+    socket.on('data', (chunk) => {
+      received = Buffer.concat([received, chunk]);
+      if (answered || received.length < 20) return;
+      answered = true;
+      const reply = answer(received.subarray(0, 20));
+      if (!reply) return;
+      const size = Math.ceil(reply.length / pieces);
+      for (let start = 0; start < reply.length; start += size) {
+        const piece = reply.subarray(start, start + size);
+        setTimeout(() => socket.write(piece), start);
+      }
+    });
+  };
 
 describe('stunOverTls', () => {
   let certificates;
   before(() => {
     certificates = makeCertificates();
   });
-
-  test('passes, with the days left, for a trusted certificate and a matching answer', async () => {
-    const server = await tlsServer(
-      certificates.localhost,
-      answeringWith((request) => bindingSuccess(request.subarray(8, 20))),
-    );
+  const check = (port, options = {}) =>
+    stunOverTls({ host: 'localhost', port, timeoutMs: 3000, ca: certificates.ca, ...options });
+  const withServer = async (certificate, onConnection, body) => {
+    const server = await tlsServer(certificate, onConnection);
     try {
-      const result = await stunOverTls({
-        host: 'localhost',
-        port: server.port,
-        timeoutMs: 3000,
-        ca: certificates.ca,
-      });
-      assert.equal(result.ok, true);
-      assert.ok(result.daysLeft >= 29 && result.daysLeft <= 30, String(result.daysLeft));
+      await body(server.port);
     } finally {
       await server.close();
     }
+  };
+
+  test('passes, with the days left, for a trusted certificate and a matching answer', async () => {
+    await withServer(
+      certificates.localhost,
+      answeringWith((request) => bindingSuccess(idOf(request))),
+      async (port) => {
+        const result = await check(port);
+        assert.equal(result.ok, true);
+        assert.ok(result.daysLeft >= 29 && result.daysLeft <= 30, String(result.daysLeft));
+      },
+    );
+  });
+
+  test('passes when the answer arrives in several pieces', async () => {
+    await withServer(
+      certificates.localhost,
+      answeringWith((request) => bindingSuccess(idOf(request)), 4),
+      async (port) => assert.equal((await check(port)).ok, true),
+    );
   });
 
   test('fails for a certificate made out to another name, and learns no expiry', async () => {
-    const server = await tlsServer(
+    await withServer(
       certificates.otherName,
-      answeringWith((request) => bindingSuccess(request.subarray(8, 20))),
+      answeringWith((request) => bindingSuccess(idOf(request))),
+      async (port) => {
+        const result = await check(port);
+        assert.deepEqual(
+          [result.ok, result.reason, result.daysLeft],
+          [false, 'ERR_TLS_CERT_ALTNAME_INVALID', undefined],
+        );
+      },
     );
+  });
+
+  test('fails for a CA the system does not trust, even with NODE_TLS_REJECT_UNAUTHORIZED=0', async () => {
+    const previous = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    const emitWarning = process.emitWarning;
+    process.emitWarning = () => {};
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     try {
-      const result = await stunOverTls({
-        host: 'localhost',
-        port: server.port,
-        timeoutMs: 3000,
-        ca: certificates.ca,
-      });
-      assert.equal(result.ok, false);
-      assert.equal(result.reason, 'ERR_TLS_CERT_ALTNAME_INVALID');
-      assert.equal(result.daysLeft, undefined);
+      await withServer(
+        certificates.localhost,
+        answeringWith((request) => bindingSuccess(idOf(request))),
+        async (port) => {
+          const result = await check(port, { ca: undefined });
+          assert.equal(result.ok, false);
+          assert.equal(result.daysLeft, undefined);
+        },
+      );
     } finally {
-      await server.close();
+      if (previous === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previous;
+      process.emitWarning = emitWarning;
     }
   });
 
-  test('fails for a certificate from a CA the system does not trust', async () => {
-    const server = await tlsServer(
-      certificates.localhost,
-      answeringWith((request) => bindingSuccess(request.subarray(8, 20))),
-    );
-    try {
-      const result = await stunOverTls({ host: 'localhost', port: server.port, timeoutMs: 3000 });
-      assert.equal(result.ok, false);
-      assert.equal(result.daysLeft, undefined);
-    } finally {
-      await server.close();
-    }
-  });
-
-  test('fails on an answer to another transaction, but still reports the days left', async () => {
-    const server = await tlsServer(
-      certificates.localhost,
-      answeringWith(() => bindingSuccess(Buffer.alloc(12, 0xff))),
-    );
-    try {
-      const result = await stunOverTls({
-        host: 'localhost',
-        port: server.port,
-        timeoutMs: 3000,
-        ca: certificates.ca,
-      });
-      assert.equal(result.ok, false);
-      assert.equal(result.reason, 'not a matching Binding success');
-      assert.equal(typeof result.daysLeft, 'number');
-    } finally {
-      await server.close();
-    }
-  });
-
-  test('fails on an oversized answer, a trailing extra message and a closed connection', async () => {
+  test('fails on an answer to another transaction or an error response, with the days left', async () => {
     const cases = [
-      [() => Buffer.alloc(MAX_MESSAGE_BYTES + 1, 1), 'answer too long'],
-      [
-        (request) => Buffer.concat([bindingSuccess(request.subarray(8, 20)), Buffer.alloc(20, 0)]),
-        'not a matching Binding success',
-      ],
+      [() => bindingSuccess(Buffer.alloc(12, 0xff)), 'not a matching Binding success'],
+      [(request) => stunMessage(0x0111, idOf(request)), 'Binding error response'],
     ];
     for (const [answer, reason] of cases) {
-      const server = await tlsServer(certificates.localhost, answeringWith(answer));
-      try {
-        const result = await stunOverTls({
-          host: 'localhost',
-          port: server.port,
-          timeoutMs: 3000,
-          ca: certificates.ca,
-        });
+      await withServer(certificates.localhost, answeringWith(answer), async (port) => {
+        const result = await check(port);
         assert.deepEqual([result.ok, result.reason], [false, reason]);
-      } finally {
-        await server.close();
-      }
-    }
-    const closing = await tlsServer(certificates.localhost, (socket) => {
-      socket.on('data', () => socket.end());
-      socket.on('error', () => {});
-    });
-    try {
-      const result = await stunOverTls({
-        host: 'localhost',
-        port: closing.port,
-        timeoutMs: 3000,
-        ca: certificates.ca,
+        assert.equal(typeof result.daysLeft, 'number');
       });
-      assert.deepEqual([result.ok, result.reason], [false, 'closed before answering']);
-    } finally {
-      await closing.close();
     }
   });
+
+  test('fails at once on an oversized answer or a header announcing one', async () => {
+    const huge = (request) => {
+      const header = stunMessage(0x0101, idOf(request));
+      header.writeUInt16BE(0xfffc, 2);
+      return header; // the header only: the client must not wait for 65 KB
+    };
+    for (const answer of [() => Buffer.alloc(MAX_MESSAGE_BYTES + 1, 1), huge]) {
+      await withServer(certificates.localhost, answeringWith(answer), async (port) => {
+        const started = Date.now();
+        const result = await check(port);
+        assert.deepEqual([result.ok, result.reason], [false, 'answer too long']);
+        assert.ok(Date.now() - started < 2500);
+      });
+    }
+  });
+
+  test('fails on a trailing extra message, a closed connection and silence', async () => {
+    await withServer(
+      certificates.localhost,
+      answeringWith((request) =>
+        Buffer.concat([bindingSuccess(idOf(request)), Buffer.alloc(20, 0)]),
+      ),
+      async (port) => {
+        const result = await check(port);
+        assert.deepEqual([result.ok, result.reason], [false, 'not a matching Binding success']);
+      },
+    );
+    await withServer(
+      certificates.localhost,
+      (socket) => socket.on('data', () => socket.end()),
+      async (port) => {
+        const result = await check(port);
+        assert.deepEqual([result.ok, result.reason], [false, 'closed before answering']);
+      },
+    );
+    await withServer(
+      certificates.localhost,
+      answeringWith(() => undefined),
+      async (port) => {
+        const result = await check(port, { timeoutMs: 400 });
+        assert.deepEqual([result.ok, result.reason], [false, 'no answer']);
+        assert.equal(typeof result.daysLeft, 'number');
+      },
+    );
+  });
 });
+
+/** A TCP port on 127.0.0.1 that nothing listens on. */
+async function closedTcpPort() {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
 
 describe('main', () => {
   let certificates;
   let udp;
   let silentUdp;
   let overTls;
+  let wrongAnswerTls;
   before(async () => {
     certificates = makeCertificates();
-    udp = await udpServer((request) => bindingSuccess(request.subarray(8, 20)));
+    udp = await udpServer((request) => bindingSuccess(idOf(request)));
     silentUdp = await udpServer(() => undefined);
     overTls = await tlsServer(
       certificates.localhost,
-      answeringWith((request) => bindingSuccess(request.subarray(8, 20))),
+      answeringWith((request) => bindingSuccess(idOf(request))),
+    );
+    wrongAnswerTls = await tlsServer(
+      certificates.localhost,
+      answeringWith(() => bindingSuccess(Buffer.alloc(12, 0xff))),
     );
   });
   after(async () => {
     udp.close();
     silentUdp.close();
     await overTls.close();
+    await wrongAnswerTls.close();
   });
 
   const run = async (options) => {
     const lines = [];
     const failures = await main({
       host: 'localhost',
+      udpPort: udp.port,
       tlsPort: overTls.port,
       tries: 2,
       retryMs: 0,
@@ -418,17 +518,17 @@ describe('main', () => {
   };
 
   test('prints both targets up and the certificate ok', async () => {
-    const { failures, lines } = await run({ udpPort: udp.port });
+    const { failures, lines } = await run();
     assert.equal(failures, 0);
-    assert.deepEqual(lines, [
+    assert.deepEqual(lines.slice(0, 2), [
       `up:   turn:localhost:${udp.port} (STUN over UDP)`,
       `up:   turns:localhost:${overTls.port} (STUN over TLS)`,
-      lines[2],
     ]);
     assert.match(lines[2], /^certificate ok: (29|30) days left$/);
+    assert.equal(lines.length, 3);
   });
 
-  test('prints DOWN after the tries, and never the server’s answer', async () => {
+  test('prints DOWN after the tries', async () => {
     const { failures, lines } = await run({ udpPort: silentUdp.port });
     assert.equal(failures, 1);
     assert.deepEqual(lines.slice(0, 3), [
@@ -439,15 +539,30 @@ describe('main', () => {
   });
 
   test('prints CERTIFICATE EXPIRES SOON below the threshold', async () => {
-    const { failures, lines } = await run({ udpPort: udp.port, minDaysLeft: 31 });
+    const { failures, lines } = await run({ minDaysLeft: 31 });
     assert.equal(failures, 0);
     assert.match(lines.at(-1), /^CERTIFICATE EXPIRES SOON: (29|30) days left$/);
   });
 
-  test('prints no certificate line when the handshake never completed', async () => {
-    const { failures, lines } = await run({ udpPort: udp.port, ca: undefined });
-    assert.equal(failures, 1);
-    assert.equal(lines.at(-1), `DOWN: turns:localhost:${overTls.port} (STUN over TLS)`);
-    assert.ok(!lines.some((line) => /certificate/i.test(line)));
+  test('prints no certificate line when the handshake failed or the STUN answer did', async () => {
+    for (const options of [{ ca: undefined }, { tlsPort: wrongAnswerTls.port }]) {
+      const { failures, lines } = await run(options);
+      assert.equal(failures, 1);
+      assert.match(lines.at(-1), /^DOWN: turns:localhost:\d+ \(STUN over TLS\)$/);
+      assert.ok(!lines.some((line) => /certificate/i.test(line)), lines.join('\n'));
+    }
+  });
+
+  test('never prints an address, even when a connection is refused', async () => {
+    const closedTls = await closedTcpPort();
+    const closedUdp = await udpServer(() => undefined);
+    closedUdp.close();
+    const { failures, lines } = await run({ udpPort: closedUdp.port, tlsPort: closedTls });
+    assert.equal(failures, 2);
+    assert.ok(
+      lines.some((line) => line.endsWith(': ECONNREFUSED')),
+      lines.join('\n'),
+    );
+    assert.ok(!lines.some((line) => /127\.0\.0\.1|::1/.test(line)), lines.join('\n'));
   });
 });

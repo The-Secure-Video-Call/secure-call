@@ -5,25 +5,31 @@
 //   DOWN: <target> (<how>)                       three tries failed
 //   certificate ok: <n> days left                the 5349 certificate has MIN_DAYS_LEFT or more
 //   CERTIFICATE EXPIRES SOON: <n> days left      fewer than MIN_DAYS_LEFT
-// No certificate line means the TLS handshake never completed, so its expiry is unknown.
+// Exactly one up/DOWN line per target, always. The certificate line comes only from a try whose
+// STUN answer over TLS also passed (so it is coturn's certificate); without one, its expiry is
+// unknown and no certificate line is printed.
 //
-// It prints only our host name, ports and error codes, never what the server sent: a STUN
-// response carries the runner's own public address. Binding requests need no TURN credentials.
-// The certificate is checked by Node's default TLS verification (trusted chain, host name).
+// It prints only our host name, ports and error codes, never what a server sent (a STUN answer
+// carries the runner's own public address) and never Node's error messages (which name the
+// resolved address). Binding requests need no TURN credentials. The certificate's chain and host
+// name are checked by Node's TLS verification, which this sets explicitly, so an environment
+// variable such as NODE_TLS_REJECT_UNAUTHORIZED cannot turn it off.
 //
 // Optional: UPTIME_RETRY_SECONDS (default 30), as in check-uptime.sh.
 import { randomBytes } from 'node:crypto';
 import dgram from 'node:dgram';
+import { realpathSync } from 'node:fs';
 import tls from 'node:tls';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export const TURN_HOST = 'turn.securevideocall.com';
 export const MIN_DAYS_LEFT = 21;
 const STUN_MAGIC_COOKIE = 0x2112a442;
 const BINDING_REQUEST = 0x0001;
 const BINDING_SUCCESS = 0x0101;
+const BINDING_ERROR = 0x0111;
 const HEADER_LENGTH = 20;
-// coturn's Binding success is well under 100 bytes; anything longer is not one.
+// coturn's Binding answers are well under 100 bytes; anything longer is not one.
 export const MAX_MESSAGE_BYTES = 512;
 const DAY_MS = 86_400_000;
 
@@ -40,18 +46,28 @@ export function bindingRequest(transactionId) {
   return message;
 }
 
-/** Whether `message` is exactly one Binding success response to the request with `transactionId`. */
-export function isBindingSuccess(message, transactionId) {
+/** Whether `message` is exactly one well-formed STUN message of `type` for `transactionId`. */
+function isAnswerOfType(message, transactionId, type) {
   if (!Buffer.isBuffer(message) || message.length < HEADER_LENGTH) return false;
   if (message.length > MAX_MESSAGE_BYTES) return false;
   const attributesLength = message.readUInt16BE(2);
   return (
-    message.readUInt16BE(0) === BINDING_SUCCESS &&
+    message.readUInt16BE(0) === type &&
     attributesLength % 4 === 0 &&
     message.length === HEADER_LENGTH + attributesLength &&
     message.readUInt32BE(4) === STUN_MAGIC_COOKIE &&
     message.subarray(8, HEADER_LENGTH).equals(transactionId)
   );
+}
+
+/** Whether `message` is exactly one Binding success response to the request with `transactionId`. */
+export function isBindingSuccess(message, transactionId) {
+  return isAnswerOfType(message, transactionId, BINDING_SUCCESS);
+}
+
+/** Whether `message` is a Binding error response to our request (coturn up, but refusing). */
+export function isBindingError(message, transactionId) {
+  return isAnswerOfType(message, transactionId, BINDING_ERROR);
 }
 
 /** Whole days from `nowMs` until the certificate's `valid_to`; negative once it has expired. */
@@ -61,11 +77,16 @@ export function daysLeft(validTo, nowMs) {
   return Math.floor((expiresMs - nowMs) / DAY_MS);
 }
 
+/** Only Node's error code (a fixed set of names), never its message, which names addresses. */
 function errorReason(error) {
-  return typeof error?.code === 'string' ? error.code : 'error';
+  return typeof error?.code === 'string' && /^[A-Z0-9_]+$/.test(error.code) ? error.code : 'error';
 }
 
-/** One STUN Binding request over UDP. Resolves to {ok, reason}. */
+/**
+ * One STUN Binding request over UDP. Resolves to {ok, reason}. The socket is connected to the
+ * server, so the kernel drops datagrams from any other address or port, and a closed port fails
+ * at once (ECONNREFUSED) instead of timing out.
+ */
 export function stunOverUdp({ host, port, timeoutMs, transactionId = randomBytes(12) }) {
   return new Promise((resolve) => {
     const socket = dgram.createSocket('udp4');
@@ -79,12 +100,17 @@ export function stunOverUdp({ host, port, timeoutMs, transactionId = randomBytes
     };
     const timer = setTimeout(() => finish({ ok: false, reason: 'no answer' }), timeoutMs);
     socket.on('error', (error) => finish({ ok: false, reason: errorReason(error) }));
-    // Other datagrams (late answers to an earlier try use another socket) are ignored.
     socket.on('message', (message) => {
       if (isBindingSuccess(message, transactionId)) finish({ ok: true });
+      else if (isBindingError(message, transactionId)) {
+        finish({ ok: false, reason: 'Binding error response' });
+      }
+      // Anything else is ignored; the timer decides.
     });
-    socket.send(bindingRequest(transactionId), port, host, (error) => {
-      if (error) finish({ ok: false, reason: errorReason(error) });
+    socket.connect(port, host, () => {
+      socket.send(bindingRequest(transactionId), (error) => {
+        if (error) finish({ ok: false, reason: errorReason(error) });
+      });
     });
   });
 }
@@ -92,7 +118,7 @@ export function stunOverUdp({ host, port, timeoutMs, transactionId = randomBytes
 /**
  * One STUN Binding request over TLS. Resolves to {ok, reason, daysLeft}; daysLeft is set
  * whenever the handshake completed, even if the STUN answer then failed. `ca` replaces the
- * system's trusted certificates and exists for the tests only; the check never passes it.
+ * system's trusted certificates and exists for the tests only: the program never passes it.
  */
 export function stunOverTls({
   host,
@@ -111,6 +137,9 @@ export function stunOverTls({
       port,
       servername: host,
       minVersion: 'TLSv1.2',
+      // Explicit, so NODE_TLS_REJECT_UNAUTHORIZED=0 in the environment cannot turn these off.
+      rejectUnauthorized: true,
+      checkServerIdentity: tls.checkServerIdentity,
       ...(ca === undefined ? {} : { ca }),
     });
     const finish = (result) => {
@@ -121,7 +150,7 @@ export function stunOverTls({
       resolve({ ...result, daysLeft: certificateDaysLeft });
     };
     const timer = setTimeout(() => finish({ ok: false, reason: 'no answer' }), timeoutMs);
-    // Reached only after Node verified the chain and the host name (rejectUnauthorized).
+    // Reached only after Node verified the chain and the host name.
     socket.on('secureConnect', () => {
       try {
         certificateDaysLeft = daysLeft(socket.getPeerCertificate().valid_to, nowMs);
@@ -139,13 +168,21 @@ export function stunOverTls({
       }
       if (received.length < HEADER_LENGTH) return;
       const messageLength = HEADER_LENGTH + received.readUInt16BE(2);
+      if (messageLength > MAX_MESSAGE_BYTES) {
+        finish({ ok: false, reason: 'answer too long' });
+        return;
+      }
       if (received.length < messageLength) return;
       const answer = received.subarray(0, messageLength);
-      finish(
-        isBindingSuccess(answer, transactionId) && received.length === messageLength
-          ? { ok: true }
-          : { ok: false, reason: 'not a matching Binding success' },
-      );
+      if (received.length !== messageLength) {
+        finish({ ok: false, reason: 'not a matching Binding success' });
+      } else if (isBindingSuccess(answer, transactionId)) {
+        finish({ ok: true });
+      } else if (isBindingError(answer, transactionId)) {
+        finish({ ok: false, reason: 'Binding error response' });
+      } else {
+        finish({ ok: false, reason: 'not a matching Binding success' });
+      }
     });
     socket.on('error', (error) => finish({ ok: false, reason: errorReason(error) }));
     socket.on('close', () => finish({ ok: false, reason: 'closed before answering' }));
@@ -163,13 +200,18 @@ async function withTries(tries, retryMs, attempt, log, label) {
   return result;
 }
 
+function retryMsFromEnvironment() {
+  const seconds = Number(process.env.UPTIME_RETRY_SECONDS || 30);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : 30_000;
+}
+
 /** Runs both checks and prints the lines described at the top. Returns the number of failures. */
 export async function main({
   host = TURN_HOST,
   udpPort = 3478,
   tlsPort = 5349,
   tries = 3,
-  retryMs = Number(process.env.UPTIME_RETRY_SECONDS ?? 30) * 1000,
+  retryMs = retryMsFromEnvironment(),
   timeoutMs = 10_000,
   minDaysLeft = MIN_DAYS_LEFT,
   nowMs,
@@ -190,38 +232,44 @@ export async function main({
   if (!udp.ok) failures += 1;
 
   const tlsTarget = `turns:${host}:${tlsPort}`;
-  let lastDaysLeft;
   const overTls = await withTries(
     tries,
     retryMs,
-    async () => {
-      const result = await stunOverTls({ host, port: tlsPort, timeoutMs, nowMs, ca });
-      if (result.daysLeft !== undefined) lastDaysLeft = result.daysLeft;
-      return result;
-    },
+    () => stunOverTls({ host, port: tlsPort, timeoutMs, nowMs, ca }),
     log,
     tlsTarget,
   );
   log(`${overTls.ok ? 'up:  ' : 'DOWN:'} ${tlsTarget} (STUN over TLS)`);
   if (!overTls.ok) failures += 1;
 
-  if (lastDaysLeft !== undefined) {
+  // withTries returns the passing try, so this is coturn's own certificate.
+  if (overTls.ok && overTls.daysLeft !== undefined) {
     log(
-      lastDaysLeft >= minDaysLeft
-        ? `certificate ok: ${lastDaysLeft} days left`
-        : `CERTIFICATE EXPIRES SOON: ${lastDaysLeft} days left`,
+      overTls.daysLeft >= minDaysLeft
+        ? `certificate ok: ${overTls.daysLeft} days left`
+        : `CERTIFICATE EXPIRES SOON: ${overTls.daysLeft} days left`,
     );
   }
   return failures;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/** Whether this module is the program node was started with, also through a symlinked path. */
+export function isEntryPoint(argvPath, moduleUrl) {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint(process.argv[1], import.meta.url)) {
   // Failures are reported in the printed lines; the exit code is non-zero only if the check
   // itself broke, so check-uptime.sh can tell "TURN is down" from "the check did not run".
   main().then(
     () => process.exit(0),
-    (error) => {
-      console.error(`check-turn.mjs failed: ${error instanceof Error ? error.message : 'error'}`);
+    () => {
+      console.error('check-turn.mjs failed before it finished.');
       process.exit(2);
     },
   );
